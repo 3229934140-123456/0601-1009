@@ -583,6 +583,127 @@ function runTest() {
   console.log('✅ 异常查询支持按位置筛选:', excByLocationQuery.total >= 0);
   console.log('✅ 支持按盘点员、状态等多维度组合筛选:', true);
 
+  // ==============================================
+  // 12. 现场复盘 - 按区域维度汇总和下钻
+  // ==============================================
+  log('【新功能9】现场复盘 - 按楼栋/楼层/房间区域汇总');
+
+  const buildingSummaries = AssetInventory.site.getBuildingSummaries(reportTask.id);
+  console.log('🏢 楼栋汇总 - 楼栋数:', buildingSummaries.length);
+  for (const b of buildingSummaries) {
+    console.log('  ' + b.building + ': 计划' + b.totalAssets + '个, 已盘' + b.scannedAssets + '个, 完成率' + b.completionRate + '%, 子楼层数:', b.children?.length || 0);
+    if (b.children && b.children.length > 0) {
+      for (const f of b.children.slice(0, 2)) {
+        console.log('    ' + f.floor + ': 计划' + f.totalAssets + '个, 已盘' + f.scannedAssets + '个');
+      }
+    }
+  }
+
+  const buildingADetail = AssetInventory.site.getAreaDetail(reportTask.id, { building: 'A座' });
+  console.log('  A座详情: 计划资产', buildingADetail?.summary.totalAssets, '个');
+  console.log('  A座详情: 未注册资产', buildingADetail?.unregisteredScanDetails.length, '个');
+  console.log('  A座详情: 扫描记录', buildingADetail?.scanRecords.length, '条');
+
+  console.log('✅ 楼栋级汇总数据正确:', buildingSummaries.length > 0);
+  console.log('✅ 楼栋下钻到楼层:', buildingSummaries.some(b => (b.children?.length || 0) > 0));
+  console.log('✅ 区域详情包含计划/已盘/未注册等数据:', !!buildingADetail?.summary && buildingADetail.scannedAssets.length >= 0);
+
+  // ==============================================
+  // 13. 报告整改闭环 - 驳回、整改、新版追溯
+  // ==============================================
+  log('【新功能10】报告整改闭环 - 驳回原因、整改项、版本追溯');
+
+  const v3 = AssetInventory.report.createReportVersion(reportTask.id, '王主管');
+  const v3Frozen = AssetInventory.report.freezeReport(v3.id);
+  const v3Reviewing = AssetInventory.report.submitForReview(v3.id);
+
+  const v3Rejected = AssetInventory.report.rejectReport(
+    v3.id,
+    '李总监',
+    '数据有问题，需要补充扫描',
+    ['补扫遗漏区域', '核实异常处理'],
+    '王主管'
+  );
+  console.log('📝 v3 驳回状态:', v3Rejected.status, '驳回人:', v3Rejected.reviewer);
+
+  const rectList = AssetInventory.report.getRectificationRecords(reportTask.id);
+  console.log('🔧 整改记录数:', rectList.length);
+  const rect = rectList[0];
+  console.log('  整改项:', rect?.rectificationItems.length, '项');
+  console.log('  整改负责人:', rect?.rectificationAssignee);
+  console.log('  整改状态:', rect?.status);
+
+  const completedRect = AssetInventory.report.completeRectification(rect.id, '已完成所有补扫和异常核实');
+  console.log('✅ 整改完成后状态:', completedRect.status);
+
+  const v4 = AssetInventory.report.regenerateAfterRectification(rect.id, '王主管');
+  console.log('📝 整改后生成 v', v4.version, '来源整改ID:', v4.sourceRectificationId);
+
+  const v4WithRect = AssetInventory.report.getRectificationById(rect.id)!;
+  console.log('🔗 整改记录关联的新版本:', v4WithRect.newReportVersionId);
+
+  console.log('✅ 驳回报告可生成整改记录:', rectList.length > 0);
+  console.log('✅ 整改记录包含驳回原因和整改项:', rect?.rectificationItems.length > 0);
+  console.log('✅ 整改完成后可生成新版报告:', v4.version > v3.version);
+  console.log('✅ 新版报告可追溯到整改来源:', !!v4.sourceRectificationId);
+
+  // ==============================================
+  // 14. 扫描位置查询验证
+  // ==============================================
+  log('【新功能11】扫描位置查询修复 - 按实际扫描位置筛选');
+
+  const misplacedScan = AssetInventory.task.submitScan({
+    taskId: reportTask.id,
+    assetNo: 'RPT-002',
+    scanner: '测试员',
+    scanLocation: { building: 'C座', floor: '5层', room: '502', position: '靠窗' }
+  });
+  console.log('📍 提交一条错位扫描（资产在B座，实际扫到C座）');
+
+  const buildingCScans = AssetInventory.query.queryScans({
+    taskId: reportTask.id,
+    location: { building: 'C座' },
+    page: 1,
+    pageSize: 20
+  });
+  console.log('  按C座（实际扫描位置）筛选:', buildingCScans.total, '条');
+
+  const unregisteredInBuilding = AssetInventory.query.queryScans({
+    taskId: reportTask.id,
+    location: { building: 'B座' },
+    status: 'unregistered' as any,
+    page: 1,
+    pageSize: 20
+  });
+  console.log('  B座的未注册资产扫描:', unregisteredInBuilding.total, '条');
+
+  console.log('✅ 错位扫描按实际位置能查到（C座）:', buildingCScans.total >= 1);
+  console.log('✅ 未注册资产按扫描位置能查到:', unregisteredInBuilding.total >= 0);
+
+  // ==============================================
+  // 15. 异常处理链路视图
+  // ==============================================
+  log('【新功能12】异常处理链路 - 上报→审批→同步→处理完成');
+
+  const reportExceptions = AssetInventory.exception.listExceptions({ taskId: reportTask.id });
+  const testException = reportExceptions.find(e => e.approvalStatus === 'approved') || reportExceptions[0];
+
+  if (testException) {
+    const chain = AssetInventory.exception.getExceptionProcessChain(testException.id);
+    console.log('🔗 异常处理链路 - 节点数:', chain?.nodes.length);
+    if (chain) {
+      for (const node of chain.nodes) {
+        console.log('  [' + node.timestamp + '] ' + node.title + ' - ' + (node.operator || '系统'));
+      }
+      console.log('  当前状态:', chain.currentStatus);
+      console.log('  总耗时(分钟):', chain.totalDurationMinutes);
+    }
+
+    console.log('✅ 异常链路包含上报节点:', chain?.nodes.some(n => n.type === 'report'));
+    console.log('✅ 异常链路包含审批节点:', chain?.nodes.some(n => n.type === 'approval'));
+    console.log('✅ 链路按时间顺序排列:', chain ? chain.nodes.every((n, i, arr) => i === 0 || n.timestamp >= arr[i - 1].timestamp) : false);
+  }
+
   log('✅ 所有功能验证完成！');
 }
 

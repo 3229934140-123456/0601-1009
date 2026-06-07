@@ -7,7 +7,8 @@ import {
   AssetHistoryRecord,
   InventoryDataSnapshot,
   PendingAction,
-  InventoryReportVersion
+  InventoryReportVersion,
+  RectificationRecord
 } from './types';
 import { formatDate } from './utils';
 
@@ -19,6 +20,7 @@ export class DataStore {
   private history: AssetHistoryRecord[] = [];
   private pendingActions: PendingAction[] = [];
   private reportVersions: InventoryReportVersion[] = [];
+  private rectificationRecords: RectificationRecord[] = [];
 
   getAssets(): Asset[] {
     return Array.from(this.assets.values());
@@ -178,6 +180,34 @@ export class DataStore {
     return this.reportVersions[index];
   }
 
+  getRectificationRecords(taskId?: string, reportVersionId?: string): RectificationRecord[] {
+    let records = [...this.rectificationRecords];
+    if (taskId) {
+      records = records.filter(r => r.taskId === taskId);
+    }
+    if (reportVersionId) {
+      records = records.filter(r => r.reportVersionId === reportVersionId || r.newReportVersionId === reportVersionId);
+    }
+    return records.sort((a, b) =>
+      new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+  }
+
+  getRectificationById(id: string): RectificationRecord | undefined {
+    return this.rectificationRecords.find(r => r.id === id);
+  }
+
+  addRectificationRecord(record: RectificationRecord): void {
+    this.rectificationRecords.push(record);
+  }
+
+  updateRectificationRecord(id: string, updates: Partial<RectificationRecord>): RectificationRecord | undefined {
+    const index = this.rectificationRecords.findIndex(r => r.id === id);
+    if (index === -1) return undefined;
+    this.rectificationRecords[index] = { ...this.rectificationRecords[index], ...updates };
+    return this.rectificationRecords[index];
+  }
+
   clear(): void {
     this.assets.clear();
     this.tasks.clear();
@@ -186,6 +216,7 @@ export class DataStore {
     this.history = [];
     this.pendingActions = [];
     this.reportVersions = [];
+    this.rectificationRecords = [];
   }
 
   exportSnapshot(): InventoryDataSnapshot {
@@ -198,7 +229,8 @@ export class DataStore {
       exceptions: [...this.exceptions],
       history: [...this.history],
       pendingActions: [...this.pendingActions],
-      reportVersions: [...this.reportVersions]
+      reportVersions: [...this.reportVersions],
+      rectificationRecords: [...this.rectificationRecords]
     };
   }
 
@@ -214,6 +246,7 @@ export class DataStore {
     history: number;
     pendingActions: number;
     reportVersions: number;
+    rectificationRecords: number;
   } {
     if (mode === 'replace') {
       this.clear();
@@ -281,6 +314,17 @@ export class DataStore {
       }
     }
 
+    let rectificationCount = 0;
+    const rectificationIds = new Set(this.rectificationRecords.map(r => r.id));
+    if (snapshot.rectificationRecords) {
+      for (const record of snapshot.rectificationRecords) {
+        if (!rectificationIds.has(record.id)) {
+          this.rectificationRecords.push({ ...record });
+          rectificationCount++;
+        }
+      }
+    }
+
     return {
       assets: assetCount,
       tasks: taskCount,
@@ -288,7 +332,8 @@ export class DataStore {
       exceptions: this.exceptions.length,
       history: this.history.length,
       pendingActions: this.pendingActions.length,
-      reportVersions: reportVersionCount
+      reportVersions: reportVersionCount,
+      rectificationRecords: rectificationCount
     };
   }
 
@@ -300,6 +345,7 @@ export class DataStore {
     history: number;
     pendingActions: number;
     reportVersions: number;
+    rectificationRecords: number;
   } {
     const snapshot = JSON.parse(json) as InventoryDataSnapshot;
     return this.importSnapshot(snapshot, mode);

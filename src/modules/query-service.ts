@@ -61,10 +61,20 @@ export class QueryService {
         if (inPlan !== params.inPlan) return false;
       }
 
-      if (params.department || params.location) {
-        const asset = scan.assetId ? store.getAssetById(scan.assetId) : undefined;
-        if (params.department && asset?.department !== params.department) return false;
-        if (params.location && !locationMatches(asset?.location, params.location)) return false;
+      const asset = scan.assetId ? store.getAssetById(scan.assetId) : undefined;
+
+      if (params.department) {
+        if (asset?.department !== params.department) return false;
+      }
+
+      if (params.location) {
+        if (scan.scanLocation) {
+          if (!locationMatches(scan.scanLocation, params.location)) return false;
+        } else if (asset?.location) {
+          if (!locationMatches(asset.location, params.location)) return false;
+        } else {
+          return false;
+        }
       }
 
       return true;

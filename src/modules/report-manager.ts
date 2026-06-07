@@ -1,4 +1,12 @@
-import { InventoryReport, InventoryReportVersion, ReportDiffItem, UnregisteredScanDetail, ExceptionWithAssetInfo, ScanWithAssetInfo } from '../types';
+import {
+  InventoryReport,
+  InventoryReportVersion,
+  ReportDiffItem,
+  UnregisteredScanDetail,
+  ExceptionWithAssetInfo,
+  ScanWithAssetInfo,
+  RectificationRecord
+} from '../types';
 import { store } from '../store';
 import { generateId, formatDate } from '../utils';
 import { resultSummarizer } from './result-summarizer';
@@ -279,7 +287,7 @@ export class ReportManager {
     return deepClone(updated);
   }
 
-  rejectReport(versionId: string, reviewer: string, comment: string): InventoryReportVersion {
+  rejectReport(versionId: string, reviewer: string, comment: string, rectificationItems?: string[], rectificationAssignee?: string): InventoryReportVersion {
     const version = store.getReportVersionById(versionId);
     if (!version) {
       throw new Error(`报告版本 ${versionId} 不存在`);
@@ -293,11 +301,131 @@ export class ReportManager {
       reviewComment: comment,
       reviewTime: formatDate()
     })!;
+
+    if (rectificationItems && rectificationItems.length > 0 && rectificationAssignee) {
+      const rectification: RectificationRecord = {
+        id: generateId('rect_'),
+        reportVersionId: versionId,
+        taskId: version.taskId,
+        rejectionReason: comment,
+        rectificationItems,
+        rectificationAssignee,
+        rectificationStartTime: formatDate(),
+        status: 'in_progress',
+        createdAt: formatDate(),
+        updatedAt: formatDate()
+      };
+      store.addRectificationRecord(rectification);
+      store.updateReportVersion(versionId, {
+        rectificationRecordId: rectification.id
+      });
+    }
+
     return deepClone(updated);
   }
 
-  regenerateAfterReject(taskId: string, creator: string): InventoryReportVersion {
-    return this.createReportVersion(taskId, creator);
+  createRectification(
+    reportVersionId: string,
+    rejectionReason: string,
+    rectificationItems: string[],
+    rectificationAssignee: string
+  ): RectificationRecord {
+    const version = store.getReportVersionById(reportVersionId);
+    if (!version) {
+      throw new Error(`报告版本 ${reportVersionId} 不存在`);
+    }
+
+    const rectification: RectificationRecord = {
+      id: generateId('rect_'),
+      reportVersionId,
+      taskId: version.taskId,
+      rejectionReason,
+      rectificationItems,
+      rectificationAssignee,
+      rectificationStartTime: formatDate(),
+      status: 'in_progress',
+      createdAt: formatDate(),
+      updatedAt: formatDate()
+    };
+
+    store.addRectificationRecord(rectification);
+    return deepClone(rectification);
+  }
+
+  completeRectification(rectificationId: string, remark?: string): RectificationRecord {
+    const rect = store.getRectificationById(rectificationId);
+    if (!rect) {
+      throw new Error(`整改记录 ${rectificationId} 不存在`);
+    }
+    if (rect.status !== 'in_progress') {
+      throw new Error(`只有进行中的整改才能完成，当前状态: ${rect.status}`);
+    }
+
+    const updated = store.updateRectificationRecord(rectificationId, {
+      status: 'completed',
+      rectificationCompleteTime: formatDate(),
+      rectificationRemark: remark,
+      updatedAt: formatDate()
+    })!;
+
+    return deepClone(updated);
+  }
+
+  regenerateAfterRectification(rectificationId: string, creator: string): InventoryReportVersion {
+    const rect = store.getRectificationById(rectificationId);
+    if (!rect) {
+      throw new Error(`整改记录 ${rectificationId} 不存在`);
+    }
+    if (rect.status !== 'completed') {
+      throw new Error(`只有已完成的整改才能生成新版本报告，当前状态: ${rect.status}`);
+    }
+    if (rect.newReportVersionId) {
+      const existing = store.getReportVersionById(rect.newReportVersionId);
+      if (existing) return deepClone(existing);
+    }
+
+    const task = store.getTaskById(rect.taskId);
+    if (!task) {
+      throw new Error(`盘点任务 ${rect.taskId} 不存在`);
+    }
+
+    const latest = store.getLatestReportVersion(rect.taskId);
+    const nextVersion = latest ? latest.version + 1 : 1;
+
+    const report = deepClone(resultSummarizer.generateReport(rect.taskId));
+
+    const version: InventoryReportVersion = {
+      id: generateId('rv_'),
+      taskId: rect.taskId,
+      version: nextVersion,
+      report,
+      status: 'draft',
+      creator,
+      createdAt: formatDate(),
+      sourceRectificationId: rectificationId
+    };
+
+    if (latest) {
+      version.differencesFromPrev = this.calculateDiff(latest.report, report);
+    }
+
+    store.addReportVersion(deepClone(version));
+
+    store.updateRectificationRecord(rectificationId, {
+      newReportVersionId: version.id,
+      updatedAt: formatDate()
+    });
+
+    return deepClone(version);
+  }
+
+  getRectificationRecords(taskId?: string, reportVersionId?: string): RectificationRecord[] {
+    return store.getRectificationRecords(taskId, reportVersionId).map(r => deepClone(r));
+  }
+
+  getRectificationById(id: string): RectificationRecord | undefined {
+    const rect = store.getRectificationById(id);
+    return rect ? deepClone(rect) : undefined;
   }
 
   getReportVersions(taskId?: string): InventoryReportVersion[] {

@@ -6,7 +6,9 @@ import {
   PendingAction,
   Asset,
   AssetLocation,
-  AssetStatus
+  AssetStatus,
+  ExceptionProcessChain,
+  ExceptionProcessNode
 } from '../types';
 import { store } from '../store';
 import { generateId, formatDate } from '../utils';
@@ -381,6 +383,89 @@ export class ExceptionManager {
     }
 
     return counts;
+  }
+
+  getExceptionProcessChain(exceptionId: string): ExceptionProcessChain | null {
+    const exception = store.getExceptionById(exceptionId);
+    if (!exception) return null;
+
+    const asset = store.getAssetById(exception.assetId);
+    const nodes: ExceptionProcessNode[] = [];
+
+    nodes.push({
+      type: 'report',
+      title: '异常上报',
+      description: exception.description,
+      operator: exception.reporter,
+      timestamp: exception.timestamp,
+      detail: { type: exception.type }
+    });
+
+    if (exception.approvalStatus === ApprovalStatus.APPROVED && exception.approvalTime) {
+      nodes.push({
+        type: 'approval',
+        title: '审批通过',
+        description: exception.approvalRemark || '审批通过',
+        operator: exception.approvalOperator,
+        timestamp: exception.approvalTime,
+        detail: { syncPerformed: exception.syncPerformed, syncDetail: exception.syncDetail }
+      });
+
+      if (exception.syncPerformed && exception.syncDetail) {
+        nodes.push({
+          type: 'sync',
+          title: '同步更新资产',
+          description: '审批通过后自动同步更新资产信息',
+          operator: exception.approvalOperator,
+          timestamp: exception.approvalTime,
+          detail: exception.syncDetail
+        });
+      }
+    } else if (exception.approvalStatus === ApprovalStatus.REJECTED && exception.approvalTime) {
+      nodes.push({
+        type: 'approval',
+        title: '审批驳回',
+        description: exception.approvalRemark || '审批驳回',
+        operator: exception.approvalOperator,
+        timestamp: exception.approvalTime
+      });
+    }
+
+    if (exception.handled && exception.handleTime) {
+      nodes.push({
+        type: 'complete',
+        title: '处理完成',
+        description: exception.handleRemark || '异常已处理',
+        timestamp: exception.handleTime,
+        detail: { handleRemark: exception.handleRemark }
+      });
+    }
+
+    nodes.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    let currentStatus: ExceptionProcessChain['currentStatus'] = 'pending';
+    if (exception.approvalStatus === ApprovalStatus.APPROVED) {
+      currentStatus = exception.handled ? 'completed' : 'approved';
+    } else if (exception.approvalStatus === ApprovalStatus.REJECTED) {
+      currentStatus = 'rejected';
+    }
+
+    let totalDurationMinutes: number | undefined;
+    if (nodes.length >= 2) {
+      const start = new Date(nodes[0].timestamp).getTime();
+      const end = new Date(nodes[nodes.length - 1].timestamp).getTime();
+      totalDurationMinutes = Math.round((end - start) / 60000);
+    }
+
+    return {
+      exceptionId: exception.id,
+      assetId: exception.assetId,
+      assetNo: exception.assetNo,
+      assetName: asset?.name,
+      nodes,
+      totalDurationMinutes,
+      currentStatus
+    };
   }
 }
 

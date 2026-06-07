@@ -24,6 +24,7 @@ export {
 } from './modules/result-summarizer';
 export { ReportManager, reportManager } from './modules/report-manager';
 export { QueryService, queryService } from './modules/query-service';
+export { SiteReviewer, siteReviewer } from './modules/site-reviewer';
 
 import { assetRegistration } from './modules/asset-registration';
 import { tagParser } from './modules/tag-parser';
@@ -34,6 +35,7 @@ import { exceptionManager } from './modules/exception-manager';
 import { resultSummarizer } from './modules/result-summarizer';
 import { reportManager } from './modules/report-manager';
 import { queryService } from './modules/query-service';
+import { siteReviewer } from './modules/site-reviewer';
 import { store } from './store';
 
 export const AssetInventory = {
@@ -46,6 +48,7 @@ export const AssetInventory = {
   summary: resultSummarizer,
   report: reportManager,
   query: queryService,
+  site: siteReviewer,
   store
 };
 

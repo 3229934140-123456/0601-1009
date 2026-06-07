@@ -311,6 +311,8 @@ export interface InventoryReportVersion {
   createdAt: string;
   frozenAt?: string;
   differencesFromPrev?: ReportDiffItem[];
+  sourceRectificationId?: string;
+  rectificationRecordId?: string;
 }
 
 export interface ReportDiffItem {
@@ -381,4 +383,71 @@ export interface InventoryDataSnapshot {
   history: AssetHistoryRecord[];
   pendingActions: PendingAction[];
   reportVersions: InventoryReportVersion[];
+  rectificationRecords: RectificationRecord[];
+}
+
+export interface AreaSummary {
+  level: 'building' | 'floor' | 'room';
+  building: string;
+  floor?: string;
+  room?: string;
+  totalAssets: number;
+  scannedAssets: number;
+  unscannedAssets: number;
+  misplacedAssets: number;
+  unregisteredAssets: number;
+  duplicateScans: number;
+  normalAssets: number;
+  completionRate: number;
+  children?: AreaSummary[];
+}
+
+export interface AreaDetail {
+  level: 'building' | 'floor' | 'room';
+  building: string;
+  floor?: string;
+  room?: string;
+  summary: AreaSummary;
+  plannedAssets: Asset[];
+  scannedAssets: Asset[];
+  unscannedAssets: Asset[];
+  misplacedAssets: Asset[];
+  unregisteredScanDetails: UnregisteredScanDetail[];
+  duplicateScans: ScanWithAssetInfo[];
+  scanRecords: ScanWithAssetInfo[];
+}
+
+export interface RectificationRecord {
+  id: string;
+  reportVersionId: string;
+  taskId: string;
+  rejectionReason: string;
+  rectificationItems: string[];
+  rectificationAssignee: string;
+  rectificationStartTime: string;
+  rectificationCompleteTime?: string;
+  rectificationRemark?: string;
+  newReportVersionId?: string;
+  status: 'pending' | 'in_progress' | 'completed';
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ExceptionProcessNode {
+  type: 'report' | 'approval' | 'sync' | 'complete';
+  title: string;
+  description: string;
+  operator?: string;
+  timestamp: string;
+  detail?: any;
+}
+
+export interface ExceptionProcessChain {
+  exceptionId: string;
+  assetId: string;
+  assetNo: string;
+  assetName?: string;
+  nodes: ExceptionProcessNode[];
+  totalDurationMinutes?: number;
+  currentStatus: 'pending' | 'approved' | 'rejected' | 'completed';
 }
