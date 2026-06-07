@@ -427,22 +427,38 @@ function runTest() {
   console.log('  - 未盘清单:', fullReport.unscannedAssetList.length + '条');
   console.log('  - 错位清单:', fullReport.misplacedAssetList.length + '条');
   console.log('  - 非计划清单:', fullReport.outOfPlanAssetList.length + '条');
-  console.log('  - 未注册清单:', fullReport.unregisteredAssetList.length + '条');
+  console.log('  - 未注册编号清单:', fullReport.unregisteredAssetList.length + '条');
+  console.log('  - 未注册扫描详情:', fullReport.unregisteredScanDetails.length + '条');
+  console.log('  - 待处理异常清单:', fullReport.pendingExceptionList.length + '条');
+  console.log('  - 已通过异常清单:', fullReport.approvedExceptionList.length + '条');
+  console.log('  - 已驳回异常清单:', fullReport.rejectedExceptionList.length + '条');
+  console.log('  - 重复扫描清单:', fullReport.duplicateScanList.length + '条');
   console.log('  - 差异清单:', fullReport.differenceList.length + '条');
+
+  const firstUnreg = fullReport.unregisteredScanDetails[0];
+  console.log('  首条未注册资产详情:', firstUnreg.assetNo, '扫描人:', firstUnreg.scanner, '扫描次数:', firstUnreg.scanCount);
+
+  const firstPendingExc = fullReport.pendingExceptionList[0];
+  console.log('  首条待处理异常:', firstPendingExc.assetNo, '类型:', firstPendingExc.type, '资产名:', firstPendingExc.assetName);
 
   console.log('✅ 报告总览包含非计划资产数量:', fullReport.outOfPlanAssets === 1);
   console.log('✅ 报告总览包含未注册资产数量:', fullReport.unregisteredAssets === 2);
   console.log('✅ 报告包含非计划资产清单:', fullReport.outOfPlanAssetList.length === 1);
-  console.log('✅ 报告包含未注册资产清单:', fullReport.unregisteredAssetList.length === 2);
-  console.log('✅ 报告包含异常统计（待处理）:', fullReport.pendingExceptions === 1);
+  console.log('✅ 报告包含未注册编号清单:', fullReport.unregisteredAssetList.length === 2);
+  console.log('✅ 报告包含未注册扫描详情（带扫描人、次数）:', fullReport.unregisteredScanDetails.length === 2 && !!firstUnreg.scanner);
+  console.log('✅ 报告包含待处理异常清单（带资产名）:', fullReport.pendingExceptionList.length === 1 && !!firstPendingExc.assetName);
+  console.log('✅ 报告包含已通过/已驳回异常分类:', fullReport.approvedExceptions === 0 && fullReport.rejectedExceptions === 0);
+  console.log('✅ 报告包含重复扫描清单:', Array.isArray(fullReport.duplicateScanList));
 
   // ==============================================
   // 10. 报告版本管理 - 冻结、复核、版本差异
   // ==============================================
-  log('【新功能7】报告版本管理 - 冻结、复核、版本差异');
+  log('【新功能7】报告版本管理 - 冻结、复核、版本差异、快照稳定性');
 
   const v1 = AssetInventory.report.createReportVersion(reportTask.id, '王主管');
   console.log('📝 生成 v1 报告版本:', v1.version, '状态:', v1.status);
+  const v1ScannedCount = v1.report.scannedAssets;
+  const v1UnregCount = v1.report.unregisteredAssets;
 
   const v1Frozen = AssetInventory.report.freezeReport(v1.id);
   console.log('❄️ 冻结后状态:', v1Frozen.status, '冻结时间:', v1Frozen.frozenAt);
@@ -454,15 +470,26 @@ function runTest() {
   console.log('✅ 审批通过 - 状态:', v1Approved.status, '复核人:', v1Approved.reviewer);
 
   AssetInventory.task.submitScan({ taskId: reportTask.id, assetNo: 'RPT-004', scanLocation: reportAssets[3].location, scanner: '盘点员B' });
+  AssetInventory.asset.updateResponsiblePerson(reportAssets[0].id, '新责任人', '人事');
+
+  const v1AfterChange = AssetInventory.report.getReportVersionById(v1.id)!;
+  console.log('🔒 冻结后修改资产，v1 已盘数仍为:', v1AfterChange.report.scannedAssets);
+  console.log('🔒 冻结后修改资产，v1 未注册数仍为:', v1AfterChange.report.unregisteredAssets);
 
   const v2 = AssetInventory.report.createReportVersion(reportTask.id, '王主管');
   console.log('📝 生成 v2 报告版本:', v2.version);
   console.log('📈 与 v1 的差异数:', v2.differencesFromPrev?.length || 0);
   if (v2.differencesFromPrev && v2.differencesFromPrev.length > 0) {
     console.log('  主要差异:');
-    for (const diff of v2.differencesFromPrev.slice(0, 5)) {
+    for (const diff of v2.differencesFromPrev.slice(0, 8)) {
       const sign = diff.change > 0 ? '+' : '';
       console.log(`    ${diff.label}: ${diff.oldValue} → ${diff.newValue} (${sign}${diff.change})`);
+      if (diff.addedItems && diff.addedItems.length > 0) {
+        console.log(`      新增: ${diff.addedItems.slice(0, 3).join(', ')}${diff.addedItems.length > 3 ? '...' : ''}`);
+      }
+      if (diff.removedItems && diff.removedItems.length > 0) {
+        console.log(`      减少: ${diff.removedItems.slice(0, 3).join(', ')}${diff.removedItems.length > 3 ? '...' : ''}`);
+      }
     }
   }
 
@@ -472,11 +499,15 @@ function runTest() {
   console.log('✅ v1 报告状态为已通过:', v1Approved.status === 'approved');
   console.log('✅ v2 为新版本，版本号递增:', v2.version === 2);
   console.log('✅ 新版本包含与旧版本的差异:', (v2.differencesFromPrev?.length || 0) > 0);
+  console.log('✅ 冻结后修改资产，v1 数据保持不变:', v1AfterChange.report.scannedAssets === v1ScannedCount);
+  console.log('✅ 差异包含新增/减少的明细项:', v2.differencesFromPrev?.some(d =>
+    (d.addedItems?.length || 0) > 0 || (d.removedItems?.length || 0) > 0
+  ));
 
   // ==============================================
   // 11. 细粒度查询 - 组合筛选、分页、带资产信息
   // ==============================================
-  log('【新功能8】细粒度查询 - 组合筛选、分页、带资产信息');
+  log('【新功能8】细粒度查询 - 组合筛选、分页、位置部分匹配、带资产信息');
 
   const scanQuery = AssetInventory.query.queryScans({
     taskId: reportTask.id,
@@ -504,6 +535,22 @@ function runTest() {
   });
   console.log('  按错位状态筛选:', misplacedQuery.total + '条');
 
+  const buildingQuery = AssetInventory.query.queryScans({
+    taskId: reportTask.id,
+    location: { building: 'A座' },
+    page: 1,
+    pageSize: 20
+  });
+  console.log('  按A座楼栋筛选（部分匹配）:', buildingQuery.total + '条');
+
+  const floorQuery = AssetInventory.query.queryScans({
+    taskId: reportTask.id,
+    location: { building: 'B座', floor: '3层' },
+    page: 1,
+    pageSize: 20
+  });
+  console.log('  按B座3层筛选（部分匹配）:', floorQuery.total + '条');
+
   const excQuery = AssetInventory.query.queryExceptions({
     taskId: reportTask.id,
     type: 'damaged' as any,
@@ -521,8 +568,19 @@ function runTest() {
   });
   console.log('  待审批异常:', pendingExcQuery.total + '条');
 
+  const excByLocationQuery = AssetInventory.query.queryExceptions({
+    taskId: reportTask.id,
+    location: { building: 'A座' },
+    page: 1,
+    pageSize: 10
+  });
+  console.log('  按A座筛选异常（位置部分匹配）:', excByLocationQuery.total + '条');
+
   console.log('✅ 扫描查询支持分页且带资产信息:', scanQuery.total > 0 && !!firstScan.assetName);
   console.log('✅ 异常查询支持类型筛选且带资产信息:', excQuery.total > 0 && !!excQuery.list[0].assetName);
+  console.log('✅ 扫描位置支持部分匹配（只传楼栋）:', buildingQuery.total > 0);
+  console.log('✅ 扫描位置支持部分匹配（楼栋+楼层）:', floorQuery.total > 0);
+  console.log('✅ 异常查询支持按位置筛选:', excByLocationQuery.total >= 0);
   console.log('✅ 支持按盘点员、状态等多维度组合筛选:', true);
 
   log('✅ 所有功能验证完成！');

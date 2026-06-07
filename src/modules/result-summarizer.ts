@@ -7,7 +7,10 @@ import {
   DifferenceItem,
   ExceptionType,
   InventoryScope,
-  ApprovalStatus
+  ApprovalStatus,
+  UnregisteredScanDetail,
+  ExceptionWithAssetInfo,
+  ScanWithAssetInfo
 } from '../types';
 import { store } from '../store';
 import { formatDate, formatLocation } from '../utils';
@@ -142,6 +145,50 @@ export class ResultSummarizer {
       }
     }
     return Array.from(unregistered);
+  }
+
+  getUnregisteredScanDetails(taskId: string): UnregisteredScanDetail[] {
+    const task = store.getTaskById(taskId);
+    if (!task) return [];
+
+    const detailMap = new Map<string, {
+      assetNo: string;
+      firstScanTime: string;
+      lastScanTime: string;
+      scanner: string;
+      scanLocation?: any;
+      count: number;
+    }>();
+
+    for (const scan of task.actualScans) {
+      if (scan.status !== ScanStatus.UNREGISTERED) continue;
+
+      const existing = detailMap.get(scan.assetNo);
+      if (!existing) {
+        detailMap.set(scan.assetNo, {
+          assetNo: scan.assetNo,
+          firstScanTime: scan.scanTime,
+          lastScanTime: scan.scanTime,
+          scanner: scan.scanner,
+          scanLocation: scan.scanLocation,
+          count: 1
+        });
+      } else {
+        existing.lastScanTime = scan.scanTime;
+        existing.count++;
+        if (!existing.scanLocation && scan.scanLocation) {
+          existing.scanLocation = scan.scanLocation;
+        }
+      }
+    }
+
+    return Array.from(detailMap.values()).map(d => ({
+      assetNo: d.assetNo,
+      scanTime: d.lastScanTime,
+      scanner: d.scanner,
+      scanLocation: d.scanLocation,
+      scanCount: d.count
+    }));
   }
 
   generateDifferenceList(taskId: string): DifferenceItem[] {
@@ -458,6 +505,50 @@ export class ResultSummarizer {
     };
   }
 
+  getExceptionListWithAssetInfo(taskId: string, approvalStatus?: ApprovalStatus): ExceptionWithAssetInfo[] {
+    const task = store.getTaskById(taskId);
+    if (!task) return [];
+
+    const exceptions = store.getExceptions(undefined, taskId);
+    const filtered = approvalStatus !== undefined
+      ? exceptions.filter(e => e.approvalStatus === approvalStatus)
+      : exceptions;
+
+    return filtered.map(e => {
+      const asset = e.assetId ? store.getAssetById(e.assetId) : undefined;
+      return {
+        ...e,
+        assetName: asset?.name,
+        assetCategory: asset?.category,
+        currentLocation: asset?.location,
+        responsiblePerson: asset?.responsiblePerson,
+        department: asset?.department
+      };
+    });
+  }
+
+  getDuplicateScanList(taskId: string): ScanWithAssetInfo[] {
+    const task = store.getTaskById(taskId);
+    if (!task) return [];
+
+    const planSet = new Set(task.planAssetIds);
+    const duplicates = task.actualScans.filter(s => s.isDuplicate);
+
+    return duplicates.map(scan => {
+      const asset = scan.assetId ? store.getAssetById(scan.assetId) : undefined;
+      return {
+        ...scan,
+        assetName: asset?.name,
+        assetCategory: asset?.category,
+        assetStatus: asset?.status,
+        currentLocation: asset?.location,
+        responsiblePerson: asset?.responsiblePerson,
+        department: asset?.department,
+        inPlan: scan.assetId ? planSet.has(scan.assetId) : false
+      };
+    });
+  }
+
   generateReport(taskId: string): InventoryReport {
     const task = store.getTaskById(taskId);
     if (!task) {
@@ -469,8 +560,13 @@ export class ResultSummarizer {
     const misplacedAssets = this.getMisplacedAssets(taskId);
     const outOfPlanAssets = this.getOutOfPlanAssets(taskId);
     const unregisteredAssetList = this.getUnregisteredAssets(taskId);
+    const unregisteredScanDetails = this.getUnregisteredScanDetails(taskId);
     const departmentSummaries = this.summarizeByDepartment(taskId);
     const differenceList = this.generateDifferenceList(taskId);
+    const pendingExceptionList = this.getExceptionListWithAssetInfo(taskId, ApprovalStatus.PENDING);
+    const approvedExceptionList = this.getExceptionListWithAssetInfo(taskId, ApprovalStatus.APPROVED);
+    const rejectedExceptionList = this.getExceptionListWithAssetInfo(taskId, ApprovalStatus.REJECTED);
+    const duplicateScanList = this.getDuplicateScanList(taskId);
 
     const abnormalAssetIds = new Set<string>();
     for (const scan of task.actualScans) {
@@ -483,11 +579,6 @@ export class ResultSummarizer {
       .filter(id => abnormalAssetIds.has(id))
       .map(id => store.getAssetById(id))
       .filter((a): a is Asset => !!a);
-
-    const taskExceptions = store.getExceptions(undefined, taskId);
-    const pendingExceptions = taskExceptions.filter(e => e.approvalStatus === ApprovalStatus.PENDING).length;
-    const approvedExceptions = taskExceptions.filter(e => e.approvalStatus === ApprovalStatus.APPROVED).length;
-    const rejectedExceptions = taskExceptions.filter(e => e.approvalStatus === ApprovalStatus.REJECTED).length;
 
     return {
       taskId: task.id,
@@ -503,9 +594,9 @@ export class ResultSummarizer {
       abnormalAssets: abnormalAssetList.length,
       outOfPlanAssets: outOfPlanAssets.length,
       unregisteredAssets: unregisteredAssetList.length,
-      pendingExceptions,
-      approvedExceptions,
-      rejectedExceptions,
+      pendingExceptions: pendingExceptionList.length,
+      approvedExceptions: approvedExceptionList.length,
+      rejectedExceptions: rejectedExceptionList.length,
       completionRate: stats.completionRate,
       accuracyRate: stats.accuracyRate,
       departmentSummaries,
@@ -514,6 +605,11 @@ export class ResultSummarizer {
       abnormalAssetList,
       outOfPlanAssetList: outOfPlanAssets,
       unregisteredAssetList,
+      unregisteredScanDetails,
+      pendingExceptionList,
+      approvedExceptionList,
+      rejectedExceptionList,
+      duplicateScanList,
       differenceList,
       generatedAt: formatDate()
     };

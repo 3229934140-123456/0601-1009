@@ -11,7 +11,19 @@ import {
   ApprovalStatus
 } from '../types';
 import { store } from '../store';
-import { isSameLocation } from '../utils';
+import { AssetLocation } from '../types';
+
+function locationMatches(assetLocation: AssetLocation | undefined, queryLocation: Partial<AssetLocation> | undefined): boolean {
+  if (!queryLocation) return true;
+  if (!assetLocation) return false;
+
+  if (queryLocation.building && assetLocation.building !== queryLocation.building) return false;
+  if (queryLocation.floor && assetLocation.floor !== queryLocation.floor) return false;
+  if (queryLocation.room && assetLocation.room !== queryLocation.room) return false;
+  if (queryLocation.position && assetLocation.position !== queryLocation.position) return false;
+
+  return true;
+}
 
 export class QueryService {
   queryScans(params: ScanQueryParams): PaginationResult<ScanWithAssetInfo> {
@@ -52,9 +64,7 @@ export class QueryService {
       if (params.department || params.location) {
         const asset = scan.assetId ? store.getAssetById(scan.assetId) : undefined;
         if (params.department && asset?.department !== params.department) return false;
-        if (params.location && asset?.location) {
-          if (!isSameLocation(asset.location, params.location)) return false;
-        }
+        if (params.location && !locationMatches(asset?.location, params.location)) return false;
       }
 
       return true;
@@ -114,9 +124,10 @@ export class QueryService {
       if (params.startTime && exception.timestamp < params.startTime) return false;
       if (params.endTime && exception.timestamp > params.endTime) return false;
 
-      if (params.department) {
+      if (params.department || params.location) {
         const asset = exception.assetId ? store.getAssetById(exception.assetId) : undefined;
-        if (asset?.department !== params.department) return false;
+        if (params.department && asset?.department !== params.department) return false;
+        if (params.location && !locationMatches(asset?.location, params.location)) return false;
       }
 
       return true;

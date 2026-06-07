@@ -238,6 +238,32 @@ export interface DepartmentSummary {
   completionRate: number;
 }
 
+export interface UnregisteredScanDetail {
+  assetNo: string;
+  scanTime: string;
+  scanner: string;
+  scanLocation?: AssetLocation;
+  scanCount: number;
+}
+
+export interface ScanWithAssetInfo extends InventoryScan {
+  assetName?: string;
+  assetCategory?: AssetCategory;
+  assetStatus?: AssetStatus;
+  currentLocation?: AssetLocation;
+  responsiblePerson?: string;
+  department?: string;
+  inPlan: boolean;
+}
+
+export interface ExceptionWithAssetInfo extends ExceptionRecord {
+  assetName?: string;
+  assetCategory?: AssetCategory;
+  currentLocation?: AssetLocation;
+  responsiblePerson?: string;
+  department?: string;
+}
+
 export interface InventoryReport {
   taskId: string;
   taskName: string;
@@ -263,6 +289,11 @@ export interface InventoryReport {
   abnormalAssetList: Asset[];
   outOfPlanAssetList: Asset[];
   unregisteredAssetList: string[];
+  unregisteredScanDetails: UnregisteredScanDetail[];
+  pendingExceptionList: ExceptionWithAssetInfo[];
+  approvedExceptionList: ExceptionWithAssetInfo[];
+  rejectedExceptionList: ExceptionWithAssetInfo[];
+  duplicateScanList: ScanWithAssetInfo[];
   differenceList: DifferenceItem[];
   generatedAt: string;
 }
@@ -289,6 +320,9 @@ export interface ReportDiffItem {
   oldValue: any;
   newValue: any;
   change: number;
+  addedItems?: string[];
+  removedItems?: string[];
+  changedItems?: string[];
 }
 
 export interface DifferenceItem {
@@ -308,24 +342,6 @@ export interface PaginationResult<T> {
   total: number;
   page: number;
   pageSize: number;
-}
-
-export interface ScanWithAssetInfo extends InventoryScan {
-  assetName?: string;
-  assetCategory?: AssetCategory;
-  assetStatus?: AssetStatus;
-  currentLocation?: AssetLocation;
-  responsiblePerson?: string;
-  department?: string;
-  inPlan: boolean;
-}
-
-export interface ExceptionWithAssetInfo extends ExceptionRecord {
-  assetName?: string;
-  assetCategory?: AssetCategory;
-  currentLocation?: AssetLocation;
-  responsiblePerson?: string;
-  department?: string;
 }
 
 export interface ScanQueryParams extends PaginationParams {
@@ -350,6 +366,7 @@ export interface ExceptionQueryParams extends PaginationParams {
   handled?: boolean;
   reporter?: string;
   department?: string;
+  location?: Partial<AssetLocation>;
   startTime?: string;
   endTime?: string;
 }
