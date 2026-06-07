@@ -1,0 +1,21 @@
+{
+  "name": "enterprise-asset-inventory",
+  "version": "1.0.0",
+  "description": "企业资产盘点类库 - 提供资产识别、盘点和状态流转能力",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node dist/test.js"
+  },
+  "keywords": [
+    "asset",
+    "inventory",
+    "enterprise"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
