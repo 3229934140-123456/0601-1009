@@ -129,21 +129,30 @@ export class AssetRegistration {
   }
 
   updateResponsiblePerson(id: string, responsiblePerson: string, operator: string): Asset {
-    const asset = this.updateAsset(id, { responsiblePerson });
+    const original = store.getAssetById(id);
+    if (!original) {
+      throw new Error(`资产 ${id} 不存在`);
+    }
+    if (original.responsiblePerson === responsiblePerson) {
+      return original;
+    }
+
+    const fromPerson = original.responsiblePerson;
+    const updated = this.updateAsset(id, { responsiblePerson });
 
     const history: AssetHistoryRecord = {
       id: generateId('hst_'),
       assetId: id,
       type: 'update',
       title: '责任人变更',
-      description: `责任人变更为 ${responsiblePerson}`,
+      description: `责任人由 ${fromPerson} 变更为 ${responsiblePerson}`,
       operator,
       timestamp: formatDate(),
-      detail: { from: store.getAssetById(id)?.responsiblePerson, to: responsiblePerson }
+      detail: { from: fromPerson, to: responsiblePerson }
     };
     store.addHistory(history);
 
-    return asset;
+    return updated;
   }
 
   updateLocation(id: string, location: Asset['location'], operator: string): Asset {

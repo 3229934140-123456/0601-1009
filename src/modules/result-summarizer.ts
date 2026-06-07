@@ -5,10 +5,46 @@ import {
   InventoryReport,
   DepartmentSummary,
   DifferenceItem,
-  ExceptionType
+  ExceptionType,
+  InventoryScope
 } from '../types';
 import { store } from '../store';
 import { formatDate, formatLocation } from '../utils';
+
+export interface DetailedTaskStats {
+  totalPlanAssets: number;
+  scannedInPlan: number;
+  unscannedInPlan: number;
+  outOfPlanScanned: number;
+  duplicateScans: number;
+  misplacedInPlan: number;
+  unregisteredAssets: number;
+  normalInPlan: number;
+  completionRate: number;
+  accuracyRate: number;
+}
+
+export interface ScannerSummary {
+  scanner: string;
+  totalScans: number;
+  uniqueAssets: number;
+  duplicates: number;
+  misplaced: number;
+  unregistered: number;
+  outOfPlan: number;
+}
+
+export interface ScopeSummary {
+  scopeId: string;
+  scopeName: string;
+  scopeType: InventoryScope['type'];
+  scopeValue: string;
+  totalAssets: number;
+  scannedAssets: number;
+  unscannedAssets: number;
+  completionRate: number;
+  assignedScanner?: string;
+}
 
 export class ResultSummarizer {
   calculateCompletionRate(taskId: string): number {
@@ -65,6 +101,24 @@ export class ResultSummarizer {
       .filter((a): a is Asset => !!a);
   }
 
+  getOutOfPlanAssets(taskId: string): Asset[] {
+    const task = store.getTaskById(taskId);
+    if (!task) return [];
+
+    const planSet = new Set(task.planAssetIds);
+    const scannedAssetIds = new Set<string>();
+
+    for (const scan of task.actualScans) {
+      if (scan.assetId && !scan.isDuplicate && !planSet.has(scan.assetId)) {
+        scannedAssetIds.add(scan.assetId);
+      }
+    }
+
+    return Array.from(scannedAssetIds)
+      .map(id => store.getAssetById(id))
+      .filter((a): a is Asset => !!a);
+  }
+
   getDuplicateScanCount(taskId: string): number {
     const task = store.getTaskById(taskId);
     if (!task) return 0;
@@ -82,7 +136,7 @@ export class ResultSummarizer {
 
     const unregistered = new Set<string>();
     for (const scan of task.actualScans) {
-      if (scan.status === ScanStatus.UNREGISTERED) {
+      if (scan.status === ScanStatus.UNREGISTERED && !scan.isDuplicate) {
         unregistered.add(scan.assetNo);
       }
     }
@@ -238,34 +292,189 @@ export class ResultSummarizer {
     return summaries.sort((a, b) => b.completionRate - a.completionRate);
   }
 
+  summarizeByScanner(taskId: string): ScannerSummary[] {
+    const task = store.getTaskById(taskId);
+    if (!task) return [];
+
+    const scannerMap = new Map<string, {
+      totalScans: number;
+      uniqueIds: Set<string>;
+      duplicates: number;
+      misplaced: number;
+      unregistered: number;
+      outOfPlan: number;
+    }>();
+
+    const planSet = new Set(task.planAssetIds);
+
+    for (const scan of task.actualScans) {
+      if (!scannerMap.has(scan.scanner)) {
+        scannerMap.set(scan.scanner, {
+          totalScans: 0,
+          uniqueIds: new Set(),
+          duplicates: 0,
+          misplaced: 0,
+          unregistered: 0,
+          outOfPlan: 0
+        });
+      }
+
+      const stats = scannerMap.get(scan.scanner)!;
+      stats.totalScans++;
+
+      if (scan.isDuplicate) {
+        stats.duplicates++;
+      } else if (scan.status === ScanStatus.UNREGISTERED) {
+        stats.unregistered++;
+      } else if (scan.assetId) {
+        stats.uniqueIds.add(scan.assetId);
+        if (scan.status === ScanStatus.MISPLACED) {
+          stats.misplaced++;
+        }
+        if (!planSet.has(scan.assetId)) {
+          stats.outOfPlan++;
+        }
+      }
+    }
+
+    const summaries: ScannerSummary[] = [];
+    for (const [scanner, data] of scannerMap) {
+      summaries.push({
+        scanner,
+        totalScans: data.totalScans,
+        uniqueAssets: data.uniqueIds.size,
+        duplicates: data.duplicates,
+        misplaced: data.misplaced,
+        unregistered: data.unregistered,
+        outOfPlan: data.outOfPlan
+      });
+    }
+
+    return summaries.sort((a, b) => b.totalScans - a.totalScans);
+  }
+
+  summarizeByScope(taskId: string): ScopeSummary[] {
+    const task = store.getTaskById(taskId);
+    if (!task) return [];
+
+    const scannedIds = new Set<string>();
+    for (const scan of task.actualScans) {
+      if (scan.assetId && !scan.isDuplicate) {
+        scannedIds.add(scan.assetId);
+      }
+    }
+
+    const summaries: ScopeSummary[] = [];
+    for (const scope of task.scopes) {
+      let scanned = 0;
+      for (const assetId of scope.assetIds) {
+        if (scannedIds.has(assetId)) {
+          scanned++;
+        }
+      }
+
+      summaries.push({
+        scopeId: scope.id,
+        scopeName: scope.name,
+        scopeType: scope.type,
+        scopeValue: scope.value,
+        totalAssets: scope.assetIds.length,
+        scannedAssets: scanned,
+        unscannedAssets: scope.assetIds.length - scanned,
+        completionRate: scope.assetIds.length > 0
+          ? Math.round((scanned / scope.assetIds.length) * 10000) / 100
+          : 0,
+        assignedScanner: scope.assignedScanner
+      });
+    }
+
+    return summaries.sort((a, b) => b.completionRate - a.completionRate);
+  }
+
+  getDetailedStats(taskId: string): DetailedTaskStats {
+    const task = store.getTaskById(taskId);
+    if (!task) {
+      return {
+        totalPlanAssets: 0,
+        scannedInPlan: 0,
+        unscannedInPlan: 0,
+        outOfPlanScanned: 0,
+        duplicateScans: 0,
+        misplacedInPlan: 0,
+        unregisteredAssets: 0,
+        normalInPlan: 0,
+        completionRate: 0,
+        accuracyRate: 0
+      };
+    }
+
+    const planSet = new Set(task.planAssetIds);
+    const scannedInPlanIds = new Set<string>();
+    const misplacedInPlanIds = new Set<string>();
+    const outOfPlanIds = new Set<string>();
+    let duplicateCount = 0;
+    const unregisteredSet = new Set<string>();
+
+    for (const scan of task.actualScans) {
+      if (scan.isDuplicate) {
+        duplicateCount++;
+        continue;
+      }
+      if (scan.status === ScanStatus.UNREGISTERED) {
+        unregisteredSet.add(scan.assetNo);
+        continue;
+      }
+      if (scan.assetId) {
+        if (planSet.has(scan.assetId)) {
+          scannedInPlanIds.add(scan.assetId);
+          if (scan.status === ScanStatus.MISPLACED) {
+            misplacedInPlanIds.add(scan.assetId);
+          }
+        } else {
+          outOfPlanIds.add(scan.assetId);
+        }
+      }
+    }
+
+    const total = task.planAssetIds.length;
+    const scanned = scannedInPlanIds.size;
+    const unscanned = total - scanned;
+    const normal = scanned - misplacedInPlanIds.size;
+    const completionRate = total > 0 ? Math.round((scanned / total) * 10000) / 100 : 0;
+    const accuracyRate = scanned > 0 ? Math.round((normal / scanned) * 10000) / 100 : 0;
+
+    return {
+      totalPlanAssets: total,
+      scannedInPlan: scanned,
+      unscannedInPlan: unscanned,
+      outOfPlanScanned: outOfPlanIds.size,
+      duplicateScans: duplicateCount,
+      misplacedInPlan: misplacedInPlanIds.size,
+      unregisteredAssets: unregisteredSet.size,
+      normalInPlan: normal,
+      completionRate,
+      accuracyRate
+    };
+  }
+
   generateReport(taskId: string): InventoryReport {
     const task = store.getTaskById(taskId);
     if (!task) {
       throw new Error(`盘点任务 ${taskId} 不存在`);
     }
 
-    const totalAssets = task.planAssetIds.length;
+    const stats = this.getDetailedStats(taskId);
     const unscannedAssets = this.getUnscannedAssets(taskId);
     const misplacedAssets = this.getMisplacedAssets(taskId);
-    const duplicateScans = this.getDuplicateScanCount(taskId);
-    const completionRate = this.calculateCompletionRate(taskId);
-    const accuracyRate = this.calculateAccuracyRate(taskId);
     const departmentSummaries = this.summarizeByDepartment(taskId);
     const differenceList = this.generateDifferenceList(taskId);
 
-    const scannedAssetIds = new Set<string>();
     const abnormalAssetIds = new Set<string>();
     for (const scan of task.actualScans) {
-      if (scan.assetId && !scan.isDuplicate) {
-        scannedAssetIds.add(scan.assetId);
-        if (scan.status !== ScanStatus.NORMAL) {
-          abnormalAssetIds.add(scan.assetId);
-        }
+      if (scan.assetId && !scan.isDuplicate && scan.status !== ScanStatus.NORMAL) {
+        abnormalAssetIds.add(scan.assetId);
       }
     }
-
-    const scannedAssets = task.planAssetIds.filter(id => scannedAssetIds.has(id)).length;
-    const abnormalAssets = task.planAssetIds.filter(id => abnormalAssetIds.has(id)).length;
 
     const abnormalAssetList = task.planAssetIds
       .filter(id => abnormalAssetIds.has(id))
@@ -278,14 +487,14 @@ export class ResultSummarizer {
       batchNo: task.batchNo,
       startTime: task.startTime,
       endTime: task.endTime,
-      totalAssets,
-      scannedAssets,
-      unscannedAssets: unscannedAssets.length,
-      duplicateScans,
-      misplacedAssets: misplacedAssets.length,
-      abnormalAssets,
-      completionRate,
-      accuracyRate,
+      totalAssets: stats.totalPlanAssets,
+      scannedAssets: stats.scannedInPlan,
+      unscannedAssets: stats.unscannedInPlan,
+      duplicateScans: stats.duplicateScans,
+      misplacedAssets: stats.misplacedInPlan,
+      abnormalAssets: abnormalAssetList.length,
+      completionRate: stats.completionRate,
+      accuracyRate: stats.accuracyRate,
       departmentSummaries,
       unscannedAssetList: unscannedAssets,
       misplacedAssetList: misplacedAssets,
@@ -306,60 +515,17 @@ export class ResultSummarizer {
     completionRate: number;
     accuracyRate: number;
   } {
-    const task = store.getTaskById(taskId);
-    if (!task) {
-      return {
-        total: 0,
-        scanned: 0,
-        unscanned: 0,
-        normal: 0,
-        misplaced: 0,
-        duplicate: 0,
-        unregistered: 0,
-        completionRate: 0,
-        accuracyRate: 0
-      };
-    }
-
-    const total = task.planAssetIds.length;
-    const scannedAssetIds = new Set<string>();
-    const misplacedAssetIds = new Set<string>();
-    let duplicateCount = 0;
-    let unregisteredCount = 0;
-
-    for (const scan of task.actualScans) {
-      if (scan.isDuplicate) {
-        duplicateCount++;
-        continue;
-      }
-      if (scan.status === ScanStatus.UNREGISTERED) {
-        unregisteredCount++;
-        continue;
-      }
-      if (scan.assetId) {
-        scannedAssetIds.add(scan.assetId);
-        if (scan.status === ScanStatus.MISPLACED) {
-          misplacedAssetIds.add(scan.assetId);
-        }
-      }
-    }
-
-    const inPlanScanned = task.planAssetIds.filter(id => scannedAssetIds.has(id)).length;
-    const unscanned = total - inPlanScanned;
-    const normal = inPlanScanned - misplacedAssetIds.size;
-    const completionRate = total > 0 ? Math.round((inPlanScanned / total) * 10000) / 100 : 0;
-    const accuracyRate = inPlanScanned > 0 ? Math.round((normal / inPlanScanned) * 10000) / 100 : 0;
-
+    const stats = this.getDetailedStats(taskId);
     return {
-      total,
-      scanned: inPlanScanned,
-      unscanned,
-      normal,
-      misplaced: misplacedAssetIds.size,
-      duplicate: duplicateCount,
-      unregistered: unregisteredCount,
-      completionRate,
-      accuracyRate
+      total: stats.totalPlanAssets,
+      scanned: stats.scannedInPlan,
+      unscanned: stats.unscannedInPlan,
+      normal: stats.normalInPlan,
+      misplaced: stats.misplacedInPlan,
+      duplicate: stats.duplicateScans,
+      unregistered: stats.unregisteredAssets,
+      completionRate: stats.completionRate,
+      accuracyRate: stats.accuracyRate
     };
   }
 }

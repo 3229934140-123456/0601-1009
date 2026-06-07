@@ -6,7 +6,8 @@ import {
   ScanInput,
   Asset,
   AssetLocation,
-  AssetHistoryRecord
+  AssetHistoryRecord,
+  InventoryScope
 } from '../types';
 import { store } from '../store';
 import { generateId, formatDate, isSameLocation } from '../utils';
@@ -47,6 +48,7 @@ export class InventoryTaskManager {
       operator: input.operator,
       planAssetIds,
       actualScans: [],
+      scopes: [],
       createdAt: now,
       updatedAt: now
     };
@@ -158,7 +160,7 @@ export class InventoryTaskManager {
       return this.createUnregisteredScan(input);
     }
 
-    const existingScan = this.findLatestScan(task.id, asset.id);
+    const existingScan = this.findLatestScanByAssetId(task.id, asset.id);
     const isDuplicate = !!existingScan;
 
     let status: ScanStatus = ScanStatus.NORMAL;
@@ -166,6 +168,11 @@ export class InventoryTaskManager {
       status = ScanStatus.DUPLICATE;
     } else if (input.scanLocation && !isSameLocation(asset.location, input.scanLocation)) {
       status = ScanStatus.MISPLACED;
+    }
+
+    const inPlan = task.planAssetIds.includes(asset.id);
+    if (!inPlan && !isDuplicate) {
+      status = ScanStatus.NORMAL;
     }
 
     const scan: InventoryScan = {
@@ -194,7 +201,7 @@ export class InventoryTaskManager {
         description: `在盘点任务 ${task.name} (${task.batchNo}) 中被扫描`,
         operator: input.scanner,
         timestamp: scan.scanTime,
-        detail: { taskId: task.id, taskName: task.name, status }
+        detail: { taskId: task.id, taskName: task.name, status, inPlan }
       };
       store.addHistory(history);
     }
@@ -229,6 +236,10 @@ export class InventoryTaskManager {
   }
 
   private createUnregisteredScan(input: ScanInput): InventoryScan {
+    const task = store.getTaskById(input.taskId);
+    const existingScan = task ? this.findLatestUnregisteredScan(task.id, input.assetNo) : undefined;
+    const isDuplicate = !!existingScan;
+
     const scan: InventoryScan = {
       id: generateId('scan_'),
       taskId: input.taskId,
@@ -237,12 +248,11 @@ export class InventoryTaskManager {
       scanTime: input.scanTime || formatDate(),
       scanner: input.scanner,
       scanLocation: input.scanLocation,
-      status: ScanStatus.UNREGISTERED,
-      isDuplicate: false,
+      status: isDuplicate ? ScanStatus.DUPLICATE : ScanStatus.UNREGISTERED,
+      isDuplicate,
       note: input.note || '未注册资产'
     };
 
-    const task = store.getTaskById(input.taskId);
     if (task) {
       task.actualScans.push(scan);
       task.updatedAt = formatDate();
@@ -252,7 +262,7 @@ export class InventoryTaskManager {
     return scan;
   }
 
-  private findLatestScan(taskId: string, assetId: string): InventoryScan | undefined {
+  private findLatestScanByAssetId(taskId: string, assetId: string): InventoryScan | undefined {
     const task = store.getTaskById(taskId);
     if (!task) return undefined;
 
@@ -263,23 +273,42 @@ export class InventoryTaskManager {
     return assetScans[0];
   }
 
+  private findLatestUnregisteredScan(taskId: string, assetNo: string): InventoryScan | undefined {
+    const task = store.getTaskById(taskId);
+    if (!task) return undefined;
+
+    const scans = task.actualScans
+      .filter(s => s.assetNo === assetNo && s.status === ScanStatus.UNREGISTERED && !s.isDuplicate)
+      .sort((a, b) => new Date(b.scanTime).getTime() - new Date(a.scanTime).getTime());
+
+    return scans[0];
+  }
+
   mergeDuplicateScans(taskId: string): { merged: number; kept: InventoryScan[] } {
     const task = store.getTaskById(taskId);
     if (!task) {
       throw new Error(`盘点任务 ${taskId} 不存在`);
     }
 
-    const uniqueScans = new Map<string, InventoryScan>();
-    const duplicateCount = 0;
+    const registeredMap = new Map<string, InventoryScan>();
+    const unregisteredMap = new Map<string, InventoryScan>();
 
     for (const scan of task.actualScans) {
-      const existing = uniqueScans.get(scan.assetId);
-      if (!existing) {
-        uniqueScans.set(scan.assetId, { ...scan, isDuplicate: false });
+      if (scan.assetId) {
+        if (!registeredMap.has(scan.assetId)) {
+          registeredMap.set(scan.assetId, { ...scan, isDuplicate: false });
+        }
+      } else {
+        if (!unregisteredMap.has(scan.assetNo)) {
+          unregisteredMap.set(scan.assetNo, { ...scan, isDuplicate: false });
+        }
       }
     }
 
-    const kept = Array.from(uniqueScans.values());
+    const kept = [
+      ...Array.from(registeredMap.values()),
+      ...Array.from(unregisteredMap.values())
+    ];
     const merged = task.actualScans.length - kept.length;
 
     task.actualScans = kept;
@@ -350,6 +379,310 @@ export class InventoryTaskManager {
     task.updatedAt = formatDate();
     store.updateTask(task);
     return task;
+  }
+
+  createScope(taskId: string, params: {
+    name: string;
+    type: InventoryScope['type'];
+    value: string;
+    assetIds?: string[];
+    assignedScanner?: string;
+  }): InventoryScope {
+    const task = store.getTaskById(taskId);
+    if (!task) {
+      throw new Error(`盘点任务 ${taskId} 不存在`);
+    }
+
+    let assetIds = params.assetIds || [];
+
+    if (assetIds.length === 0) {
+      switch (params.type) {
+        case 'department':
+          assetIds = store.getAssets()
+            .filter(a => a.department === params.value && task.planAssetIds.includes(a.id))
+            .map(a => a.id);
+          break;
+        case 'location':
+          assetIds = store.getAssets()
+            .filter(a => {
+              if (!task.planAssetIds.includes(a.id)) return false;
+              const loc = a.location;
+              return loc.building === params.value ||
+                `${loc.building}-${loc.floor}` === params.value ||
+                `${loc.building}-${loc.floor}-${loc.room}` === params.value;
+            })
+            .map(a => a.id);
+          break;
+        case 'responsible_person':
+          assetIds = store.getAssets()
+            .filter(a => a.responsiblePerson === params.value && task.planAssetIds.includes(a.id))
+            .map(a => a.id);
+          break;
+      }
+    }
+
+    const now = formatDate();
+    const scope: InventoryScope = {
+      id: generateId('scope_'),
+      taskId,
+      name: params.name,
+      type: params.type,
+      value: params.value,
+      assetIds,
+      assignedScanner: params.assignedScanner,
+      status: InventoryStatus.PENDING,
+      createdAt: now,
+      updatedAt: now
+    };
+
+    task.scopes.push(scope);
+    task.updatedAt = now;
+    store.updateTask(task);
+
+    return scope;
+  }
+
+  splitByDepartment(taskId: string, departments?: string[], scannerMap?: Record<string, string>): InventoryScope[] {
+    const task = store.getTaskById(taskId);
+    if (!task) {
+      throw new Error(`盘点任务 ${taskId} 不存在`);
+    }
+
+    const planAssets = task.planAssetIds
+      .map(id => store.getAssetById(id))
+      .filter((a): a is Asset => !!a);
+
+    const deptSet = departments
+      ? new Set(departments)
+      : new Set(planAssets.map(a => a.department));
+
+    const scopes: InventoryScope[] = [];
+    for (const dept of deptSet) {
+      const scope = this.createScope(taskId, {
+        name: `${dept}盘点范围`,
+        type: 'department',
+        value: dept,
+        assignedScanner: scannerMap?.[dept]
+      });
+      scopes.push(scope);
+    }
+
+    return scopes;
+  }
+
+  splitByLocation(taskId: string, level: 'building' | 'floor' | 'room' = 'building', scannerMap?: Record<string, string>): InventoryScope[] {
+    const task = store.getTaskById(taskId);
+    if (!task) {
+      throw new Error(`盘点任务 ${taskId} 不存在`);
+    }
+
+    const planAssets = task.planAssetIds
+      .map(id => store.getAssetById(id))
+      .filter((a): a is Asset => !!a);
+
+    const locationKeys = new Set<string>();
+    for (const asset of planAssets) {
+      const loc = asset.location;
+      let key = '';
+      switch (level) {
+        case 'building':
+          key = loc.building;
+          break;
+        case 'floor':
+          key = `${loc.building}-${loc.floor}`;
+          break;
+        case 'room':
+          key = `${loc.building}-${loc.floor}-${loc.room}`;
+          break;
+      }
+      if (key) locationKeys.add(key);
+    }
+
+    const scopes: InventoryScope[] = [];
+    for (const key of locationKeys) {
+      const scope = this.createScope(taskId, {
+        name: `${key}盘点范围`,
+        type: 'location',
+        value: key,
+        assignedScanner: scannerMap?.[key]
+      });
+      scopes.push(scope);
+    }
+
+    return scopes;
+  }
+
+  splitByResponsiblePerson(taskId: string, persons?: string[], scannerMap?: Record<string, string>): InventoryScope[] {
+    const task = store.getTaskById(taskId);
+    if (!task) {
+      throw new Error(`盘点任务 ${taskId} 不存在`);
+    }
+
+    const planAssets = task.planAssetIds
+      .map(id => store.getAssetById(id))
+      .filter((a): a is Asset => !!a);
+
+    const personSet = persons
+      ? new Set(persons)
+      : new Set(planAssets.map(a => a.responsiblePerson));
+
+    const scopes: InventoryScope[] = [];
+    for (const person of personSet) {
+      const scope = this.createScope(taskId, {
+        name: `${person}负责资产盘点`,
+        type: 'responsible_person',
+        value: person,
+        assignedScanner: scannerMap?.[person]
+      });
+      scopes.push(scope);
+    }
+
+    return scopes;
+  }
+
+  getScopes(taskId: string): InventoryScope[] {
+    const task = store.getTaskById(taskId);
+    if (!task) return [];
+    return task.scopes;
+  }
+
+  getScope(taskId: string, scopeId: string): InventoryScope | undefined {
+    const task = store.getTaskById(taskId);
+    if (!task) return undefined;
+    return task.scopes.find(s => s.id === scopeId);
+  }
+
+  updateScope(taskId: string, scopeId: string, updates: Partial<InventoryScope>): InventoryScope {
+    const task = store.getTaskById(taskId);
+    if (!task) {
+      throw new Error(`盘点任务 ${taskId} 不存在`);
+    }
+
+    const scopeIndex = task.scopes.findIndex(s => s.id === scopeId);
+    if (scopeIndex === -1) {
+      throw new Error(`盘点范围 ${scopeId} 不存在`);
+    }
+
+    task.scopes[scopeIndex] = {
+      ...task.scopes[scopeIndex],
+      ...updates,
+      id: scopeId,
+      taskId,
+      updatedAt: formatDate()
+    };
+
+    task.updatedAt = formatDate();
+    store.updateTask(task);
+
+    return task.scopes[scopeIndex];
+  }
+
+  assignScanner(taskId: string, scopeId: string, scanner: string): InventoryScope {
+    return this.updateScope(taskId, scopeId, { assignedScanner: scanner });
+  }
+
+  startScope(taskId: string, scopeId: string): InventoryScope {
+    return this.updateScope(taskId, scopeId, {
+      status: InventoryStatus.IN_PROGRESS,
+      startTime: formatDate()
+    });
+  }
+
+  completeScope(taskId: string, scopeId: string): InventoryScope {
+    return this.updateScope(taskId, scopeId, {
+      status: InventoryStatus.COMPLETED,
+      endTime: formatDate()
+    });
+  }
+
+  getScopeStats(taskId: string, scopeId: string): {
+    total: number;
+    scanned: number;
+    unscanned: number;
+    completionRate: number;
+    scanner?: string;
+  } {
+    const scope = this.getScope(taskId, scopeId);
+    const task = store.getTaskById(taskId);
+    if (!scope || !task) {
+      return { total: 0, scanned: 0, unscanned: 0, completionRate: 0 };
+    }
+
+    const scannedIds = new Set<string>();
+    for (const scan of task.actualScans) {
+      if (scan.assetId && !scan.isDuplicate) {
+        scannedIds.add(scan.assetId);
+      }
+    }
+
+    let scanned = 0;
+    for (const assetId of scope.assetIds) {
+      if (scannedIds.has(assetId)) {
+        scanned++;
+      }
+    }
+
+    const total = scope.assetIds.length;
+    return {
+      total,
+      scanned,
+      unscanned: total - scanned,
+      completionRate: total > 0 ? Math.round((scanned / total) * 10000) / 100 : 0,
+      scanner: scope.assignedScanner
+    };
+  }
+
+  getTaskScanners(taskId: string): string[] {
+    const task = store.getTaskById(taskId);
+    if (!task) return [];
+
+    const scanners = new Set<string>();
+    for (const scan of task.actualScans) {
+      if (scan.scanner) {
+        scanners.add(scan.scanner);
+      }
+    }
+    return Array.from(scanners);
+  }
+
+  getScannerStats(taskId: string, scanner: string): {
+    totalScans: number;
+    uniqueAssets: number;
+    duplicates: number;
+    misplaced: number;
+    unregistered: number;
+  } {
+    const task = store.getTaskById(taskId);
+    if (!task) {
+      return { totalScans: 0, uniqueAssets: 0, duplicates: 0, misplaced: 0, unregistered: 0 };
+    }
+
+    const scannerScans = task.actualScans.filter(s => s.scanner === scanner);
+    const uniqueIds = new Set<string>();
+    let duplicates = 0;
+    let misplaced = 0;
+    let unregistered = 0;
+
+    for (const scan of scannerScans) {
+      if (scan.isDuplicate) {
+        duplicates++;
+      } else if (scan.assetId) {
+        uniqueIds.add(scan.assetId);
+        if (scan.status === ScanStatus.MISPLACED) {
+          misplaced++;
+        }
+      } else if (scan.status === ScanStatus.UNREGISTERED) {
+        unregistered++;
+      }
+    }
+
+    return {
+      totalScans: scannerScans.length,
+      uniqueAssets: uniqueIds.size,
+      duplicates,
+      misplaced,
+      unregistered
+    };
   }
 }
 

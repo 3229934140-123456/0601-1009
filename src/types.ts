@@ -99,6 +99,21 @@ export interface TagInfo {
   extra?: Record<string, any>;
 }
 
+export interface InventoryScope {
+  id: string;
+  taskId: string;
+  name: string;
+  type: 'department' | 'location' | 'responsible_person' | 'custom';
+  value: string;
+  assetIds: string[];
+  assignedScanner?: string;
+  status: InventoryStatus;
+  startTime?: string;
+  endTime?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface InventoryTask {
   id: string;
   name: string;
@@ -111,6 +126,7 @@ export interface InventoryTask {
   operator: string;
   planAssetIds: string[];
   actualScans: InventoryScan[];
+  scopes: InventoryScope[];
   createdAt: string;
   updatedAt: string;
 }
@@ -176,6 +192,29 @@ export interface ExceptionRecord {
   handled: boolean;
   handleRemark?: string;
   handleTime?: string;
+  suggestedAction?: {
+    updateStatus?: AssetStatus;
+    updateLocation?: AssetLocation;
+    updateResponsiblePerson?: string;
+  };
+  syncPerformed?: boolean;
+  syncDetail?: any;
+}
+
+export interface PendingAction {
+  id: string;
+  type: 'exception_approval' | 'status_change' | 'location_update' | 'asset_transfer';
+  refId: string;
+  assetId: string;
+  assetNo: string;
+  title: string;
+  description: string;
+  priority: 'low' | 'medium' | 'high';
+  assignee?: string;
+  status: 'pending' | 'processing' | 'done' | 'cancelled';
+  createdAt: string;
+  dueDate?: string;
+  detail?: any;
 }
 
 export interface AssetHistoryRecord {
@@ -238,4 +277,15 @@ export interface PaginationResult<T> {
   total: number;
   page: number;
   pageSize: number;
+}
+
+export interface InventoryDataSnapshot {
+  version: string;
+  exportedAt: string;
+  assets: Asset[];
+  tasks: InventoryTask[];
+  statusChanges: StatusChangeRecord[];
+  exceptions: ExceptionRecord[];
+  history: AssetHistoryRecord[];
+  pendingActions: PendingAction[];
 }

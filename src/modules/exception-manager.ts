@@ -2,10 +2,16 @@ import {
   ExceptionRecord,
   ExceptionType,
   ApprovalStatus,
-  AssetHistoryRecord
+  AssetHistoryRecord,
+  PendingAction,
+  Asset,
+  AssetLocation,
+  AssetStatus
 } from '../types';
 import { store } from '../store';
 import { generateId, formatDate } from '../utils';
+import { statusManager } from './status-manager';
+import { assetRegistration } from './asset-registration';
 
 export interface CreateExceptionInput {
   taskId?: string;
@@ -14,22 +20,27 @@ export interface CreateExceptionInput {
   type: ExceptionType;
   description: string;
   reporter: string;
+  priority?: 'low' | 'medium' | 'high';
+  suggestedAction?: {
+    updateStatus?: AssetStatus;
+    updateLocation?: AssetLocation;
+    updateResponsiblePerson?: string;
+  };
+  assignee?: string;
 }
 
-export interface ApprovalInput {
-  exceptionId: string;
-  operator: string;
-  status: ApprovalStatus;
-  remark?: string;
+export interface ApprovalOptions {
+  syncAssetUpdate?: boolean;
 }
 
-export type ApprovalCallback = (exception: ExceptionRecord) => void;
+export type ApprovalCallback = (exception: ExceptionRecord, pendingAction?: PendingAction) => void;
 
 export class ExceptionManager {
   private approvalCallbacks: Set<ApprovalCallback> = new Set();
 
-  createException(input: CreateExceptionInput): ExceptionRecord {
+  createException(input: CreateExceptionInput): { exception: ExceptionRecord; pendingAction: PendingAction } {
     const now = formatDate();
+
     const record: ExceptionRecord = {
       id: generateId('exc_'),
       taskId: input.taskId,
@@ -40,26 +51,66 @@ export class ExceptionManager {
       reporter: input.reporter,
       timestamp: now,
       approvalStatus: ApprovalStatus.PENDING,
-      handled: false
+      handled: false,
+      suggestedAction: input.suggestedAction
     };
 
     store.addException(record);
+
+    const pendingAction: PendingAction = {
+      id: generateId('pa_'),
+      type: 'exception_approval',
+      refId: record.id,
+      assetId: input.assetId,
+      assetNo: input.assetNo,
+      title: `${this.getTypeLabel(input.type)}异常待审批`,
+      description: input.description,
+      priority: input.priority || this.getDefaultPriority(input.type),
+      assignee: input.assignee,
+      status: 'pending',
+      createdAt: now,
+      detail: { exceptionId: record.id, type: input.type }
+    };
+
+    store.addPendingAction(pendingAction);
 
     const history: AssetHistoryRecord = {
       id: generateId('hst_'),
       assetId: input.assetId,
       type: 'exception',
-      title: '异常记录',
-      description: `记录 ${this.getTypeLabel(input.type)} 异常：${input.description}`,
+      title: '异常记录上报',
+      description: `上报 ${this.getTypeLabel(input.type)} 异常：${input.description}，待审批处理`,
       operator: input.reporter,
       timestamp: now,
-      detail: input
+      detail: {
+        exceptionId: record.id,
+        pendingActionId: pendingAction.id,
+        type: input.type,
+        description: input.description
+      }
     };
     store.addHistory(history);
 
-    this.triggerApprovalPrompt(record);
+    this.triggerApprovalPrompt(record, pendingAction);
 
-    return record;
+    return { exception: record, pendingAction };
+  }
+
+  private getDefaultPriority(type: ExceptionType): PendingAction['priority'] {
+    switch (type) {
+      case ExceptionType.LOST:
+        return 'high';
+      case ExceptionType.DAMAGED:
+        return 'high';
+      case ExceptionType.MISPLACED:
+        return 'medium';
+      case ExceptionType.UNREGISTERED:
+        return 'low';
+      case ExceptionType.DUPLICATE_TAG:
+        return 'low';
+      default:
+        return 'medium';
+    }
   }
 
   getException(id: string): ExceptionRecord | undefined {
@@ -90,40 +141,86 @@ export class ExceptionManager {
     );
   }
 
-  approve(exceptionId: string, operator: string, remark?: string): ExceptionRecord {
+  approve(exceptionId: string, operator: string, remark?: string, options: ApprovalOptions = {}): ExceptionRecord {
     const record = store.getExceptionById(exceptionId);
     if (!record) {
       throw new Error(`异常记录 ${exceptionId} 不存在`);
     }
     if (record.approvalStatus !== ApprovalStatus.PENDING) {
       throw new Error(`该异常已被审批，状态：${record.approvalStatus}`);
+    }
+
+    const now = formatDate();
+    let syncDetail: any = { performed: false };
+
+    if (options.syncAssetUpdate && record.suggestedAction) {
+      try {
+        const asset = store.getAssetById(record.assetId);
+        if (asset) {
+          if (record.suggestedAction.updateStatus) {
+            statusManager.changeStatus({
+              assetId: record.assetId,
+              toStatus: record.suggestedAction.updateStatus,
+              operator,
+              reason: `异常审批通过，自动更新状态：${remark || ''}`
+            });
+          }
+          if (record.suggestedAction.updateLocation) {
+            assetRegistration.updateLocation(
+              record.assetId,
+              record.suggestedAction.updateLocation,
+              operator
+            );
+          }
+          if (record.suggestedAction.updateResponsiblePerson) {
+            assetRegistration.updateResponsiblePerson(
+              record.assetId,
+              record.suggestedAction.updateResponsiblePerson,
+              operator
+            );
+          }
+          syncDetail = { performed: true, actions: record.suggestedAction };
+        }
+      } catch (e: any) {
+        syncDetail = { performed: false, error: e.message };
+      }
     }
 
     const updated = store.updateException(exceptionId, {
       approvalStatus: ApprovalStatus.APPROVED,
       approvalOperator: operator,
-      approvalTime: formatDate(),
-      approvalRemark: remark
+      approvalTime: now,
+      approvalRemark: remark,
+      syncPerformed: syncDetail.performed,
+      syncDetail
     });
 
-    if (updated) {
-      const history: AssetHistoryRecord = {
-        id: generateId('hst_'),
-        assetId: record.assetId,
-        type: 'exception',
-        title: '异常审批通过',
-        description: `异常已通过审批：${remark || '无备注'}`,
-        operator,
-        timestamp: formatDate(),
-        detail: { exceptionId, remark }
-      };
-      store.addHistory(history);
+    const pendingAction = store.getPendingActions().find(
+      p => p.refId === exceptionId && p.type === 'exception_approval'
+    );
+    if (pendingAction) {
+      store.updatePendingAction(pendingAction.id, {
+        status: 'done',
+        detail: { ...pendingAction.detail, approvedBy: operator, remark }
+      });
     }
+
+    const history: AssetHistoryRecord = {
+      id: generateId('hst_'),
+      assetId: record.assetId,
+      type: 'exception',
+      title: '异常审批通过',
+      description: `异常审批通过：${remark || '无备注'}${syncDetail.performed ? '，已同步更新资产信息' : ''}`,
+      operator,
+      timestamp: now,
+      detail: { exceptionId, remark, syncDetail }
+    };
+    store.addHistory(history);
 
     return updated!;
   }
 
-  reject(exceptionId: string, operator: string, remark?: string): ExceptionRecord {
+  reject(exceptionId: string, operator: string, remark: string): ExceptionRecord {
     const record = store.getExceptionById(exceptionId);
     if (!record) {
       throw new Error(`异常记录 ${exceptionId} 不存在`);
@@ -132,26 +229,36 @@ export class ExceptionManager {
       throw new Error(`该异常已被审批，状态：${record.approvalStatus}`);
     }
 
+    const now = formatDate();
+
     const updated = store.updateException(exceptionId, {
       approvalStatus: ApprovalStatus.REJECTED,
       approvalOperator: operator,
-      approvalTime: formatDate(),
+      approvalTime: now,
       approvalRemark: remark
     });
 
-    if (updated) {
-      const history: AssetHistoryRecord = {
-        id: generateId('hst_'),
-        assetId: record.assetId,
-        type: 'exception',
-        title: '异常审批驳回',
-        description: `异常审批被驳回：${remark || '无备注'}`,
-        operator,
-        timestamp: formatDate(),
-        detail: { exceptionId, remark }
-      };
-      store.addHistory(history);
+    const pendingAction = store.getPendingActions().find(
+      p => p.refId === exceptionId && p.type === 'exception_approval'
+    );
+    if (pendingAction) {
+      store.updatePendingAction(pendingAction.id, {
+        status: 'cancelled',
+        detail: { ...pendingAction.detail, rejectedBy: operator, remark }
+      });
     }
+
+    const history: AssetHistoryRecord = {
+      id: generateId('hst_'),
+      assetId: record.assetId,
+      type: 'exception',
+      title: '异常审批驳回',
+      description: `异常审批被驳回，原因：${remark}`,
+      operator,
+      timestamp: now,
+      detail: { exceptionId, remark }
+    };
+    store.addHistory(history);
 
     return updated!;
   }
@@ -168,7 +275,31 @@ export class ExceptionManager {
       handleTime: formatDate()
     });
 
+    const history: AssetHistoryRecord = {
+      id: generateId('hst_'),
+      assetId: record.assetId,
+      type: 'exception',
+      title: '异常已处理',
+      description: `异常处理完成：${remark}`,
+      timestamp: formatDate(),
+      detail: { exceptionId, remark }
+    };
+    store.addHistory(history);
+
     return updated!;
+  }
+
+  listPendingActions(params?: {
+    status?: PendingAction['status'];
+    type?: PendingAction['type'];
+    assignee?: string;
+    assetId?: string;
+  }): PendingAction[] {
+    return store.getPendingActions(params);
+  }
+
+  updatePendingAction(id: string, updates: Partial<PendingAction>): PendingAction | undefined {
+    return store.updatePendingAction(id, updates);
   }
 
   onApprovalPrompt(callback: ApprovalCallback): void {
@@ -179,10 +310,10 @@ export class ExceptionManager {
     this.approvalCallbacks.delete(callback);
   }
 
-  private triggerApprovalPrompt(exception: ExceptionRecord): void {
+  private triggerApprovalPrompt(exception: ExceptionRecord, pendingAction?: PendingAction): void {
     for (const callback of this.approvalCallbacks) {
       try {
-        callback(exception);
+        callback(exception, pendingAction);
       } catch (e) {
         console.error('审批提示回调执行失败:', e);
       }
