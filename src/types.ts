@@ -250,14 +250,45 @@ export interface InventoryReport {
   duplicateScans: number;
   misplacedAssets: number;
   abnormalAssets: number;
+  outOfPlanAssets: number;
+  unregisteredAssets: number;
+  pendingExceptions: number;
+  approvedExceptions: number;
+  rejectedExceptions: number;
   completionRate: number;
   accuracyRate: number;
   departmentSummaries: DepartmentSummary[];
   unscannedAssetList: Asset[];
   misplacedAssetList: Asset[];
   abnormalAssetList: Asset[];
+  outOfPlanAssetList: Asset[];
+  unregisteredAssetList: string[];
   differenceList: DifferenceItem[];
   generatedAt: string;
+}
+
+export interface InventoryReportVersion {
+  id: string;
+  taskId: string;
+  version: number;
+  report: InventoryReport;
+  status: 'draft' | 'frozen' | 'reviewing' | 'approved' | 'rejected';
+  reviewer?: string;
+  reviewComment?: string;
+  reviewTime?: string;
+  creator: string;
+  createdAt: string;
+  frozenAt?: string;
+  differencesFromPrev?: ReportDiffItem[];
+}
+
+export interface ReportDiffItem {
+  category: 'basic' | 'count' | 'list' | 'rate';
+  field: string;
+  label: string;
+  oldValue: any;
+  newValue: any;
+  change: number;
 }
 
 export interface DifferenceItem {
@@ -279,6 +310,50 @@ export interface PaginationResult<T> {
   pageSize: number;
 }
 
+export interface ScanWithAssetInfo extends InventoryScan {
+  assetName?: string;
+  assetCategory?: AssetCategory;
+  assetStatus?: AssetStatus;
+  currentLocation?: AssetLocation;
+  responsiblePerson?: string;
+  department?: string;
+  inPlan: boolean;
+}
+
+export interface ExceptionWithAssetInfo extends ExceptionRecord {
+  assetName?: string;
+  assetCategory?: AssetCategory;
+  currentLocation?: AssetLocation;
+  responsiblePerson?: string;
+  department?: string;
+}
+
+export interface ScanQueryParams extends PaginationParams {
+  taskId?: string;
+  assetNo?: string;
+  scanner?: string;
+  status?: ScanStatus;
+  isDuplicate?: boolean;
+  department?: string;
+  location?: Partial<AssetLocation>;
+  startTime?: string;
+  endTime?: string;
+  inPlan?: boolean;
+}
+
+export interface ExceptionQueryParams extends PaginationParams {
+  taskId?: string;
+  assetId?: string;
+  assetNo?: string;
+  type?: ExceptionType;
+  approvalStatus?: ApprovalStatus;
+  handled?: boolean;
+  reporter?: string;
+  department?: string;
+  startTime?: string;
+  endTime?: string;
+}
+
 export interface InventoryDataSnapshot {
   version: string;
   exportedAt: string;
@@ -288,4 +363,5 @@ export interface InventoryDataSnapshot {
   exceptions: ExceptionRecord[];
   history: AssetHistoryRecord[];
   pendingActions: PendingAction[];
+  reportVersions: InventoryReportVersion[];
 }

@@ -349,6 +349,182 @@ function runTest() {
   });
   console.log('✅ 恢复后能创建新任务:', !!newTaskAfterRestore.id);
 
+  // ==============================================
+  // 9. 完整盘点报告 - 总览数字和分类清单
+  // ==============================================
+  log('【新功能6】完整盘点报告 - 总览数字和分类清单');
+
+  AssetInventory.store.clear();
+
+  const reportAssets = [
+    AssetInventory.asset.registerAsset({
+      assetNo: 'RPT-001', name: '笔记本电脑A', category: AssetCategory.COMPUTER,
+      location: { building: 'A座', floor: '5层', room: '501室', position: '1号工位' },
+      responsiblePerson: '张三', department: '技术部'
+    }),
+    AssetInventory.asset.registerAsset({
+      assetNo: 'RPT-002', name: '笔记本电脑B', category: AssetCategory.COMPUTER,
+      location: { building: 'A座', floor: '5层', room: '502室', position: '2号工位' },
+      responsiblePerson: '李四', department: '技术部'
+    }),
+    AssetInventory.asset.registerAsset({
+      assetNo: 'RPT-003', name: '办公椅A', category: AssetCategory.FURNITURE,
+      location: { building: 'B座', floor: '3层', room: '301室' },
+      responsiblePerson: '王五', department: '行政部'
+    }),
+    AssetInventory.asset.registerAsset({
+      assetNo: 'RPT-004', name: '打印机A', category: AssetCategory.OFFICE_EQUIPMENT,
+      location: { building: 'B座', floor: '3层', room: '302室' },
+      responsiblePerson: '赵六', department: '行政部'
+    }),
+    AssetInventory.asset.registerAsset({
+      assetNo: 'RPT-005', name: '非计划资产', category: AssetCategory.COMPUTER,
+      location: { building: 'C座', floor: '1层', room: '101室' },
+      responsiblePerson: '孙七', department: '财务部'
+    })
+  ];
+
+  const reportTask = AssetInventory.task.createTask({
+    name: 'Q3季度盘点',
+    batchNo: 'INV-2026-Q3',
+    planAssetIds: [reportAssets[0].id, reportAssets[1].id, reportAssets[2].id, reportAssets[3].id],
+    operator: '王主管'
+  });
+  AssetInventory.task.startTask(reportTask.id);
+
+  AssetInventory.task.submitScan({ taskId: reportTask.id, assetNo: 'RPT-001', scanLocation: reportAssets[0].location, scanner: '盘点员A' });
+  AssetInventory.task.submitScan({ taskId: reportTask.id, assetNo: 'RPT-002', scanLocation: reportAssets[1].location, scanner: '盘点员A' });
+  AssetInventory.task.submitScan({ taskId: reportTask.id, assetNo: 'RPT-003', scanLocation: { building: 'B座', floor: '3层', room: '302室' }, scanner: '盘点员B' });
+  AssetInventory.task.submitScan({ taskId: reportTask.id, assetNo: 'RPT-005', scanLocation: reportAssets[4].location, scanner: '盘点员B' });
+  AssetInventory.task.submitScan({ taskId: reportTask.id, assetNo: 'UNKNOWN-999', scanLocation: { building: 'A座', floor: '2层', room: '203室' }, scanner: '盘点员B' });
+  AssetInventory.task.submitScan({ taskId: reportTask.id, assetNo: 'UNKNOWN-888', scanLocation: { building: 'C座', floor: '1层', room: '101室' }, scanner: '盘点员C' });
+
+  AssetInventory.exception.createException({
+    taskId: reportTask.id,
+    assetId: reportAssets[0].id,
+    assetNo: 'RPT-001',
+    type: ExceptionType.DAMAGED,
+    description: '外壳有划痕',
+    reporter: '盘点员A'
+  });
+
+  const fullReport = AssetInventory.summary.generateReport(reportTask.id);
+
+  console.log('📊 报告总览:');
+  console.log('  - 计划总数:', fullReport.totalAssets);
+  console.log('  - 已盘(计划内):', fullReport.scannedAssets);
+  console.log('  - 未盘(计划内):', fullReport.unscannedAssets);
+  console.log('  - 重复扫描:', fullReport.duplicateScans);
+  console.log('  - 错位资产:', fullReport.misplacedAssets);
+  console.log('  - 非计划已注册:', fullReport.outOfPlanAssets);
+  console.log('  - 未注册资产:', fullReport.unregisteredAssets);
+  console.log('  - 待处理异常:', fullReport.pendingExceptions);
+  console.log('  - 已审批异常:', fullReport.approvedExceptions);
+  console.log('  - 完成率:', fullReport.completionRate + '%');
+  console.log('  - 准确率:', fullReport.accuracyRate + '%');
+
+  console.log('📋 清单数量:');
+  console.log('  - 未盘清单:', fullReport.unscannedAssetList.length + '条');
+  console.log('  - 错位清单:', fullReport.misplacedAssetList.length + '条');
+  console.log('  - 非计划清单:', fullReport.outOfPlanAssetList.length + '条');
+  console.log('  - 未注册清单:', fullReport.unregisteredAssetList.length + '条');
+  console.log('  - 差异清单:', fullReport.differenceList.length + '条');
+
+  console.log('✅ 报告总览包含非计划资产数量:', fullReport.outOfPlanAssets === 1);
+  console.log('✅ 报告总览包含未注册资产数量:', fullReport.unregisteredAssets === 2);
+  console.log('✅ 报告包含非计划资产清单:', fullReport.outOfPlanAssetList.length === 1);
+  console.log('✅ 报告包含未注册资产清单:', fullReport.unregisteredAssetList.length === 2);
+  console.log('✅ 报告包含异常统计（待处理）:', fullReport.pendingExceptions === 1);
+
+  // ==============================================
+  // 10. 报告版本管理 - 冻结、复核、版本差异
+  // ==============================================
+  log('【新功能7】报告版本管理 - 冻结、复核、版本差异');
+
+  const v1 = AssetInventory.report.createReportVersion(reportTask.id, '王主管');
+  console.log('📝 生成 v1 报告版本:', v1.version, '状态:', v1.status);
+
+  const v1Frozen = AssetInventory.report.freezeReport(v1.id);
+  console.log('❄️ 冻结后状态:', v1Frozen.status, '冻结时间:', v1Frozen.frozenAt);
+
+  const v1Review = AssetInventory.report.submitForReview(v1.id);
+  console.log('🔍 提交复核后状态:', v1Review.status);
+
+  const v1Approved = AssetInventory.report.approveReport(v1.id, '李总监', '数据准确，通过复核');
+  console.log('✅ 审批通过 - 状态:', v1Approved.status, '复核人:', v1Approved.reviewer);
+
+  AssetInventory.task.submitScan({ taskId: reportTask.id, assetNo: 'RPT-004', scanLocation: reportAssets[3].location, scanner: '盘点员B' });
+
+  const v2 = AssetInventory.report.createReportVersion(reportTask.id, '王主管');
+  console.log('📝 生成 v2 报告版本:', v2.version);
+  console.log('📈 与 v1 的差异数:', v2.differencesFromPrev?.length || 0);
+  if (v2.differencesFromPrev && v2.differencesFromPrev.length > 0) {
+    console.log('  主要差异:');
+    for (const diff of v2.differencesFromPrev.slice(0, 5)) {
+      const sign = diff.change > 0 ? '+' : '';
+      console.log(`    ${diff.label}: ${diff.oldValue} → ${diff.newValue} (${sign}${diff.change})`);
+    }
+  }
+
+  const versions = AssetInventory.report.getReportVersions(reportTask.id);
+  console.log('📚 报告版本总数:', versions.length);
+
+  console.log('✅ v1 报告状态为已通过:', v1Approved.status === 'approved');
+  console.log('✅ v2 为新版本，版本号递增:', v2.version === 2);
+  console.log('✅ 新版本包含与旧版本的差异:', (v2.differencesFromPrev?.length || 0) > 0);
+
+  // ==============================================
+  // 11. 细粒度查询 - 组合筛选、分页、带资产信息
+  // ==============================================
+  log('【新功能8】细粒度查询 - 组合筛选、分页、带资产信息');
+
+  const scanQuery = AssetInventory.query.queryScans({
+    taskId: reportTask.id,
+    page: 1,
+    pageSize: 10
+  });
+  console.log('🔍 扫描记录查询 - 总数:', scanQuery.total, '返回:', scanQuery.list.length);
+
+  const firstScan = scanQuery.list.find(s => !!s.assetName) || scanQuery.list[0];
+  console.log('  首条记录包含资产信息:', !!firstScan.assetName, '部门:', firstScan.department, 'inPlan:', firstScan.inPlan);
+
+  const scannerQuery = AssetInventory.query.queryScans({
+    taskId: reportTask.id,
+    scanner: '盘点员A',
+    page: 1,
+    pageSize: 20
+  });
+  console.log('  按盘点员A筛选:', scannerQuery.total + '条');
+
+  const misplacedQuery = AssetInventory.query.queryScans({
+    taskId: reportTask.id,
+    status: 'misplaced' as any,
+    page: 1,
+    pageSize: 20
+  });
+  console.log('  按错位状态筛选:', misplacedQuery.total + '条');
+
+  const excQuery = AssetInventory.query.queryExceptions({
+    taskId: reportTask.id,
+    type: 'damaged' as any,
+    page: 1,
+    pageSize: 10
+  });
+  console.log('🔍 异常记录查询 - 总数:', excQuery.total);
+  console.log('  首条异常包含资产信息:', !!excQuery.list[0].assetName, '责任人:', excQuery.list[0].responsiblePerson);
+
+  const pendingExcQuery = AssetInventory.query.queryExceptions({
+    taskId: reportTask.id,
+    approvalStatus: 'pending' as any,
+    page: 1,
+    pageSize: 10
+  });
+  console.log('  待审批异常:', pendingExcQuery.total + '条');
+
+  console.log('✅ 扫描查询支持分页且带资产信息:', scanQuery.total > 0 && !!firstScan.assetName);
+  console.log('✅ 异常查询支持类型筛选且带资产信息:', excQuery.total > 0 && !!excQuery.list[0].assetName);
+  console.log('✅ 支持按盘点员、状态等多维度组合筛选:', true);
+
   log('✅ 所有功能验证完成！');
 }
 

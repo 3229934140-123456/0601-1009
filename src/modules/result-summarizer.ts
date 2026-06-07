@@ -6,7 +6,8 @@ import {
   DepartmentSummary,
   DifferenceItem,
   ExceptionType,
-  InventoryScope
+  InventoryScope,
+  ApprovalStatus
 } from '../types';
 import { store } from '../store';
 import { formatDate, formatLocation } from '../utils';
@@ -466,6 +467,8 @@ export class ResultSummarizer {
     const stats = this.getDetailedStats(taskId);
     const unscannedAssets = this.getUnscannedAssets(taskId);
     const misplacedAssets = this.getMisplacedAssets(taskId);
+    const outOfPlanAssets = this.getOutOfPlanAssets(taskId);
+    const unregisteredAssetList = this.getUnregisteredAssets(taskId);
     const departmentSummaries = this.summarizeByDepartment(taskId);
     const differenceList = this.generateDifferenceList(taskId);
 
@@ -481,6 +484,11 @@ export class ResultSummarizer {
       .map(id => store.getAssetById(id))
       .filter((a): a is Asset => !!a);
 
+    const taskExceptions = store.getExceptions(undefined, taskId);
+    const pendingExceptions = taskExceptions.filter(e => e.approvalStatus === ApprovalStatus.PENDING).length;
+    const approvedExceptions = taskExceptions.filter(e => e.approvalStatus === ApprovalStatus.APPROVED).length;
+    const rejectedExceptions = taskExceptions.filter(e => e.approvalStatus === ApprovalStatus.REJECTED).length;
+
     return {
       taskId: task.id,
       taskName: task.name,
@@ -493,12 +501,19 @@ export class ResultSummarizer {
       duplicateScans: stats.duplicateScans,
       misplacedAssets: stats.misplacedInPlan,
       abnormalAssets: abnormalAssetList.length,
+      outOfPlanAssets: outOfPlanAssets.length,
+      unregisteredAssets: unregisteredAssetList.length,
+      pendingExceptions,
+      approvedExceptions,
+      rejectedExceptions,
       completionRate: stats.completionRate,
       accuracyRate: stats.accuracyRate,
       departmentSummaries,
       unscannedAssetList: unscannedAssets,
       misplacedAssetList: misplacedAssets,
       abnormalAssetList,
+      outOfPlanAssetList: outOfPlanAssets,
+      unregisteredAssetList,
       differenceList,
       generatedAt: formatDate()
     };

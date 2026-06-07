@@ -6,7 +6,8 @@ import {
   ExceptionRecord,
   AssetHistoryRecord,
   InventoryDataSnapshot,
-  PendingAction
+  PendingAction,
+  InventoryReportVersion
 } from './types';
 import { formatDate } from './utils';
 
@@ -17,6 +18,7 @@ export class DataStore {
   private exceptions: ExceptionRecord[] = [];
   private history: AssetHistoryRecord[] = [];
   private pendingActions: PendingAction[] = [];
+  private reportVersions: InventoryReportVersion[] = [];
 
   getAssets(): Asset[] {
     return Array.from(this.assets.values());
@@ -148,6 +150,34 @@ export class DataStore {
     return this.pendingActions.find(a => a.id === id);
   }
 
+  getReportVersions(taskId?: string): InventoryReportVersion[] {
+    let versions = [...this.reportVersions];
+    if (taskId) {
+      versions = versions.filter(v => v.taskId === taskId);
+    }
+    return versions.sort((a, b) => b.version - a.version);
+  }
+
+  getLatestReportVersion(taskId: string): InventoryReportVersion | undefined {
+    const versions = this.getReportVersions(taskId);
+    return versions[0];
+  }
+
+  getReportVersionById(id: string): InventoryReportVersion | undefined {
+    return this.reportVersions.find(v => v.id === id);
+  }
+
+  addReportVersion(version: InventoryReportVersion): void {
+    this.reportVersions.push(version);
+  }
+
+  updateReportVersion(id: string, updates: Partial<InventoryReportVersion>): InventoryReportVersion | undefined {
+    const index = this.reportVersions.findIndex(v => v.id === id);
+    if (index === -1) return undefined;
+    this.reportVersions[index] = { ...this.reportVersions[index], ...updates };
+    return this.reportVersions[index];
+  }
+
   clear(): void {
     this.assets.clear();
     this.tasks.clear();
@@ -155,6 +185,7 @@ export class DataStore {
     this.exceptions = [];
     this.history = [];
     this.pendingActions = [];
+    this.reportVersions = [];
   }
 
   exportSnapshot(): InventoryDataSnapshot {
@@ -166,7 +197,8 @@ export class DataStore {
       statusChanges: [...this.statusChanges],
       exceptions: [...this.exceptions],
       history: [...this.history],
-      pendingActions: [...this.pendingActions]
+      pendingActions: [...this.pendingActions],
+      reportVersions: [...this.reportVersions]
     };
   }
 
@@ -181,6 +213,7 @@ export class DataStore {
     exceptions: number;
     history: number;
     pendingActions: number;
+    reportVersions: number;
   } {
     if (mode === 'replace') {
       this.clear();
@@ -237,13 +270,25 @@ export class DataStore {
       }
     }
 
+    let reportVersionCount = 0;
+    const reportVersionIds = new Set(this.reportVersions.map(v => v.id));
+    if (snapshot.reportVersions) {
+      for (const version of snapshot.reportVersions) {
+        if (!reportVersionIds.has(version.id)) {
+          this.reportVersions.push({ ...version });
+          reportVersionCount++;
+        }
+      }
+    }
+
     return {
       assets: assetCount,
       tasks: taskCount,
       statusChanges: this.statusChanges.length,
       exceptions: this.exceptions.length,
       history: this.history.length,
-      pendingActions: this.pendingActions.length
+      pendingActions: this.pendingActions.length,
+      reportVersions: reportVersionCount
     };
   }
 
@@ -254,6 +299,7 @@ export class DataStore {
     exceptions: number;
     history: number;
     pendingActions: number;
+    reportVersions: number;
   } {
     const snapshot = JSON.parse(json) as InventoryDataSnapshot;
     return this.importSnapshot(snapshot, mode);
@@ -307,6 +353,26 @@ export class DataStore {
 
     if (!Array.isArray(snapshot.pendingActions)) {
       errors.push('pendingActions 不是数组');
+    }
+
+    if (!Array.isArray(snapshot.reportVersions)) {
+      errors.push('reportVersions 不是数组');
+    }
+
+    const reportVersionIds = new Set<string>();
+    if (snapshot.reportVersions) {
+      for (const version of snapshot.reportVersions) {
+        if (!version.id) errors.push('报告版本缺少 id');
+        if (!version.taskId) errors.push('报告版本缺少 taskId');
+        if (typeof version.version !== 'number') errors.push('报告版本 version 不是数字');
+        if (!version.report) errors.push('报告版本缺少 report');
+        if (version.id) {
+          if (reportVersionIds.has(version.id)) {
+            errors.push(`重复的报告版本ID: ${version.id}`);
+          }
+          reportVersionIds.add(version.id);
+        }
+      }
     }
 
     return { valid: errors.length === 0, errors };
